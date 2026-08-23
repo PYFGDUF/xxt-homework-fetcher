@@ -1,0 +1,10 @@
+# 顶层直接依赖：版本已锁定（与引擎构建 environment 保持一致）。
+# Playwright 固定 1.60.0，须与 script/build_engine.sh 及 build_and_run.sh
+# 内嵌的 chromium-1223 目录版本同步，升级时请三处一并修改。
+playwright==1.60.0
+requests==2.32.5
+python-docx==1.2.0
+beautifulsoup4==4.15.0
+docx2pdf==0.1.8
+Pillow==11.3.0
+docxcompose==1.4.1

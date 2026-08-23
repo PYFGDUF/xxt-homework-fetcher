@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  static-check:
+    name: Python 静态检查（pyflakes + py_compile）
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyflakes
+          pip install -r requirements.txt
+
+      - name: pyflakes 未使用/未定义检查
+        run: |
+          pyflakes bridge.py chaoxing_spider.py repair.py core/ spider/ exporters/
+
+      - name: py_compile 语法编译检查
+        run: |
+          python -m compileall -q bridge.py chaoxing_spider.py repair.py core/ spider/ exporters/
