@@ -26,6 +26,54 @@ LIST_LAZY_SETTLE_SEC = 0.8      # 列表懒加载后等待稳定（原 2）
 # 不再叠加 extract_homework_items 内部的另一次 wait+scroll+sleep(0.8)。
 LIST_PAGE_TURN_SETTLE_SEC = 0.8  # 分页翻页后单次稳定等待，同时充当懒加载等待（原 0.4 + 内部 0.8 叠加）
 
+# ---- 列表总量校验与网络韧性翻页 ----
+# 学习通作业列表页顶部通常会显示总量（如「已完成 33 / 共 41 份」）。
+# 网络较差时某一页可能加载不全导致「下一页」按钮短暂不可见，误判到底而漏作业。
+# 通过解析总量 + 已知不足时的兜底重探，显著降低缺漏概率。
+LIST_TOTAL_REPROBE_MS = 1200       # 兜底重探时的稳定等待
+LIST_TOTAL_REPROBE_RETRIES = 2     # has_next_page 短暂失效时的补探次数
+LIST_MAX_TOTAL = 5000              # 总量合理上限，防止把得分等数字误当总量
+
+
+def read_homework_total(list_frame):
+    """尽力从作业列表页文本解析总量统计（如「已完成 33 / 共 41 份」）。
+
+    返回 (reported_done, reported_total)；解析不到则返回 (None, None)。
+    此解析为「尽力而为」：只要正则能命中即可获得校验依据，不阻塞现有成功流程。
+    """
+    try:
+        txt = list_frame.evaluate("() => (document.body && document.body.innerText) || ''")
+    except Exception as e:
+        print(f"    [debug] 读取列表页文本失败：{e}")
+        return None, None
+    txt = re.sub(r"[ \t\u00a0]+", " ", txt or "")
+
+    def _valid(n):
+        return n is not None and 0 < n <= LIST_MAX_TOTAL
+
+    # 1) 明确上下文模式：''共 41 份/个作业'、'已有 41 个作业'、'总作业数 41'
+    m = re.search(r"(?:共|已有|总计|共计|总共)\s*[有:]?\s*(\d+)\s*(?:份|个作业|个任务|个作业列表|项)", txt)
+    if m and _valid(int(m.group(1))):
+        total = int(m.group(1))
+        dm = re.search(r"已完成?\s*[：:]?\s*(\d+)", txt)
+        return (int(dm.group(1)), total) if dm else (None, total)
+
+    # 2) 分数式：'已完成 33/41'，取右值作总量
+    m = re.search(r"已完成?\s*[：:]?\s*(\d+)\s*/\s*(\d+)", txt)
+    if m:
+        done, total = int(m.group(1)), int(m.group(2))
+        if _valid(total) and 0 <= done <= total:
+            return done, total
+
+    # 3) 兜底普通 'X / Y'（仍要求总量在合理区间）
+    m = re.search(r"(\d+)\s*/\s*(\d+)", txt)
+    if m:
+        done, total = int(m.group(1)), int(m.group(2))
+        if _valid(total) and 0 <= done <= total:
+            return done, total
+
+    return None, None
+
 
 def enter_homework_tab(page: Page) -> bool:
     """尝试点击课程页里的"作业/任务"标签。"""
@@ -360,6 +408,15 @@ def collect_all_homeworks(list_frame, on_page=None, initial_homeworks=None) -> l
     all_homeworks = []
     seen_titles = set()
 
+    # 读取页面总量做完整性校验（尽力而为，解析不到不阻塞）
+    expected_total = -1
+    try:
+        reported_done, expected_total = read_homework_total(list_frame)
+        if expected_total:
+            print(f"  检测到作业总量：{reported_done if reported_done is not None else '?'}/{expected_total}")
+    except Exception:
+        expected_total = -1
+
     def _absorb(items) -> list:
         new = []
         for h in items:
@@ -393,8 +450,23 @@ def collect_all_homeworks(list_frame, on_page=None, initial_homeworks=None) -> l
             print("\n[info] 收到停止信号，中断统计")
             break
         if not has_next_page(list_frame):
-            print("  没有下一页了")
-            break
+            # 网络韧性：已知总量但收集数不足时，「下一页」可能只是短暂未加载，
+            # 做几次滚动+等待兜底重探，避免漏页后误判到底。
+            if expected_total and 0 < expected_total and len(all_homeworks) < expected_total:
+                probed = False
+                for pm in range(1, LIST_TOTAL_REPROBE_RETRIES + 1):
+                    scroll_frame_to_bottom(list_frame)
+                    wait_stable(list_frame, LIST_TOTAL_REPROBE_MS)
+                    if has_next_page(list_frame):
+                        print(f"  [warn] 第 {page_num} 页下一页一度未加载，重探第 {pm} 次后判定可继续")
+                        probed = True
+                        break
+                if not probed:
+                    print("  没有下一页了（已完成缺失兜底探测）")
+                    break
+            else:
+                print("  没有下一页了")
+                break
         if not click_next_page(list_frame):
             print("  点击下一页失败，停止统计")
             break
@@ -412,4 +484,9 @@ def collect_all_homeworks(list_frame, on_page=None, initial_homeworks=None) -> l
 
     if page_num > MAX_HOMEWORK_PAGES:
         print(f"\n[warn] 作业列表页数超过上限 {MAX_HOMEWORK_PAGES}，已停止翻页")
+
+    # 完整性校验：若能解析到总量但收集数不足，提示可能存在网络缺漏
+    if expected_total and 0 < expected_total and len(all_homeworks) < expected_total:
+        print(f"\n[warn] 识别到 {len(all_homeworks)} 个作业，但页面显示总量为 {expected_total}，"
+              f"可能存在网络缺漏，建议网络稳定后重新加载作业列表")
     return all_homeworks

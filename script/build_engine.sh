@@ -15,11 +15,18 @@ VENV_PY="$VENV_DIR/bin/python"
 DIST="$PROJECT_DIR/build/engine-pkg/dist"
 WORK="$PROJECT_DIR/build/engine-pkg/work"
 
-# 引擎所配 Playwright 版本（其 browsers.json 对应 chromium revision 1223）。
-# 必须与 build_and_run.sh 内嵌的浏览器目录保持一致；升/降版本后请同步两处。
-PW_PIN="1.60.0"
+# 引擎所配 Playwright 版本：直接从 requirements.txt 解析为单一事实来源
+# （无需在此重复维护版本号）。该版本对应固定的 chromium revision，
+# 升级时仍需同步修改 build_and_run.sh 内嵌的浏览器目录
+# （chromium_headless_shell-<revision>），否则浏览器失配。
+PW_PIN="$(sed -n 's/^playwright[[:space:]]*==[[:space:]]*//p' "$PROJECT_DIR/requirements.txt" | head -n1 | tr -d '[:space:]')"
+if [ -z "$PW_PIN" ]; then
+    echo "[error] 未能从 requirements.txt 解析出 playwright 版本（应形如 playwright==x.y.z）" >&2
+    exit 1
+fi
 
 echo "==> 项目根: $PROJECT_DIR"
+echo "==> playwright 版本（来自 requirements.txt）: $PW_PIN"
 
 # ---- 1. 准备干净虚拟环境 ----
 if [ ! -x "$VENV_PY" ]; then

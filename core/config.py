@@ -439,21 +439,17 @@ def clear_browser_state():
 
 
 def force_stop():
-    """GUI 关闭或用户中断时调用，强制关闭当前浏览器进程。"""
+    """GUI 关闭或用户中断时调用。
+
+    只设置停止标志，由运行线程在 should_stop() 检测点（wait_stable 轮询、翻页
+    循环、runner 收尾的 finally）自行关闭浏览器/上下文。
+    注意：绝不能在本线程直接调用 playwright 的 ctx.close()/brw.close()——
+    浏览器/上下文绑定在运行线程的 greenlet 上，命令线程跨线程关闭会触发
+    “greenlet.error: Cannot switch to a different thread”，并连带让运行线程
+    后续操作全部报 “context closed”。由运行线程在正确 greenlet 内关闭才安全。
+    """
     set_should_stop(True)
-    print("[info] 收到停止信号，正在关闭浏览器...")
-    ctx = get_current_context()
-    brw = get_current_browser()
-    if ctx:
-        try:
-            ctx.close()
-        except Exception:
-            pass
-    if brw:
-        try:
-            brw.close()
-        except Exception:
-            pass
+    print("[info] 收到停止信号，正在安全终止（由运行线程关闭浏览器）...")
 
 
 def load_settings() -> dict:

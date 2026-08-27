@@ -187,11 +187,11 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
         <string>en</string>
     </array>
     <key>CFBundleShortVersionString</key>
-    <string>2.1</string>
+    <string>2.1.1</string>
         <key>CFBundleVersion</key>
-        <string>2.1</string>
+        <string>2.1.1</string>
         <key>CFBundleGetInfoString</key>
-        <string>学习通作业爬取工具 v2.1 beta</string>
+        <string>学习通作业爬取工具 v2.1.1 beta</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSPrincipalClass</key>

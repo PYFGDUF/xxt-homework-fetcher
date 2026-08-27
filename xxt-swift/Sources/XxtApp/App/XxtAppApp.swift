@@ -41,8 +41,10 @@ struct XxtApp: App {
                 }
                 .keyboardShortcut("k", modifiers: [.command])
                 Divider()
-                Button("停止任务") {
-                    appState.stopTask()
+                Button {
+                    appState.stopAction()
+                } label: {
+                    Text(appState.stopArmed ? "确认停止" : "停止任务")
                 }
                 .keyboardShortcut(".", modifiers: [.command])
                 .disabled(!appState.isRunning)

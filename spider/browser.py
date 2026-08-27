@@ -12,6 +12,7 @@ from core.config import (
     ACTION_TIMEOUT,
     COOKIE_FILE,
     WAIT_TIMEOUT,
+    should_stop,
     debug_dir,
     load_state as _load_state,
     save_state as _save_state,
@@ -83,6 +84,8 @@ def wait_stable(page_or_frame, timeout_ms: int = 5000, on_progress=None):
     last_len = None
     streak = 0
     while time.time() - start < span:
+        if should_stop():  # 停止时立即退出等待，交由运行线程自行关闭浏览器
+            break
         try:
             text = page_or_frame.locator("body").inner_text(timeout=1000)
             length = len(text.strip())

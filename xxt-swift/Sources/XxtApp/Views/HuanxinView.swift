@@ -709,12 +709,13 @@ struct HuanxinView: View {
 
                 if running {
                     Button {
-                        app.stopTask()
+                        app.stopAction()
                     } label: {
-                        Label("停止", systemImage: "stop.fill")
-                            .font(.callout.weight(.medium))
+                        Label(app.stopArmed ? "确认停止" : "停止", systemImage: "stop.fill")
+                            .font(.callout.weight(app.stopArmed ? .bold : .medium))
                     }
                     .buttonStyle(.minimalGhostRed)
+                    .animation(.easeInOut(duration: 0.18), value: app.stopArmed)
                 }
 
                 // 非运行时才显示「开始抓取」主按钮；运行时由「停止」独占，避免“抓取中…”灰显按钮造成语义冗余

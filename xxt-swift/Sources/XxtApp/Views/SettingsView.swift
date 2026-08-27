@@ -6,6 +6,8 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: DraftSettings
     @State private var confirmLogout = false
+    /// 存储空间统计（输出目录占用，按类型分类）
+    @State private var storage: AppState.StorageUsage = AppState.StorageUsage()
     /// 焕新界面：顶部分段分组（通用/选项/登录）
     @State private var huanxinTab: Int = 0
 
@@ -38,6 +40,11 @@ struct SettingsView: View {
             }
         }
         .frame(minWidth: 430, maxWidth: 540, minHeight: 400)
+        // 每次打开设置窗口都居中显示：macOS 默认会记住窗口上次位置，
+        // 通过取到所属 NSWindow 并 center() 强制回到屏幕中央。
+        .background(WindowCenterer { window in
+            if let window { window.center() }
+        })
         .alert("确认退出登录？", isPresented: $confirmLogout) {
             Button("取消", role: .cancel) { }
             Button("退出登录", role: .destructive) {
@@ -56,6 +63,7 @@ struct SettingsView: View {
                                   notifyOnComplete: app.notifyOnComplete,
                                   showSourceURL: s.showSourceURL,
                                   appearance: s.appearance)
+            storage = app.storageUsage()
         }
     }
 
@@ -78,6 +86,26 @@ struct SettingsView: View {
                         Text("深色").tag("dark")
                     }
                     .pickerStyle(.segmented)
+                }
+
+                Section {
+                    LabeledContent("总占用") { Text(app.formatBytes(storage.totalBytes)).foregroundStyle(app.theme.primary) }
+                    LabeledContent("Word") { Text(app.formatBytes(storage.wordBytes)) }
+                    LabeledContent("图片") { Text(app.formatBytes(storage.imageBytes)) }
+                    LabeledContent("PDF") { Text(app.formatBytes(storage.pdfBytes)) }
+                    LabeledContent("其他") { Text(app.formatBytes(storage.otherBytes)) }
+                    LabeledContent("课程输出目录") { Text("\(storage.runCount) 个") }
+                    Button(role: .destructive) {
+                        confirmCleanup()
+                    } label: {
+                        Label("一键清理", systemImage: "trash")
+                    }
+                    .disabled(storage.isEmpty)
+                    .help("删除输出目录下所有已生成的课程输出与 debug 文件夹")
+                } header: {
+                    Text("存储空间")
+                } footer: {
+                    Text("删除后不可恢复")
                 }
             }
             .formStyle(.grouped)
@@ -116,7 +144,7 @@ struct SettingsView: View {
                 VStack(spacing: 14) {
                     switch huanxinTab {
                     case 0:
-                        generalCard.transition(.asymmetric(
+                        generalTab.transition(.asymmetric(
                             insertion: .opacity.combined(with: .move(edge: .bottom)),
                             removal: .opacity.combined(with: .move(edge: .top))))
                     case 1:
@@ -152,6 +180,14 @@ struct SettingsView: View {
         )
         .padding(.horizontal, 24)
         .padding(.top, 18)
+    }
+
+    /// 通用页：输出目录卡片 + 存储空间卡片
+    private var generalTab: some View {
+        VStack(spacing: 14) {
+            generalCard
+            storageCard
+        }
     }
 
     /// 通用：输出目录（图标化信息头 + 前导图标字段）
@@ -192,6 +228,111 @@ struct SettingsView: View {
                 }
                 .padding(.top, 4)
             }
+        }
+    }
+
+    /// 存储空间：统计输出目录占用并按类型分类展示，支持一键清理（NSAlert 二次确认）。
+    /// 标题独立居中、字号放大，不与带副标题的卡片共用图标头布局。
+    private var storageCard: some View {
+        VStack(spacing: 0) {
+            Text("存储空间")
+                .font(.title3.weight(.bold))
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 16)
+
+            VStack(alignment: .leading, spacing: 14) {
+                // 总占用
+                HStack {
+                    Text("总占用")
+                        .font(.body.weight(.medium))
+                    Spacer(minLength: 8)
+                    Text(app.formatBytes(storage.totalBytes))
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(storage.isEmpty ? Color.secondary : app.theme.primary)
+                }
+
+                // 按类型分类占用
+                HStack(spacing: 0) {
+                    storageTypeRow(icon: "doc.text", label: "Word", bytes: storage.wordBytes)
+                    rowDivider.padding(.horizontal, 10)
+                    storageTypeRow(icon: "photo", label: "图片", bytes: storage.imageBytes)
+                    rowDivider.padding(.horizontal, 10)
+                    storageTypeRow(icon: "doc.richtext", label: "PDF", bytes: storage.pdfBytes)
+                    rowDivider.padding(.horizontal, 10)
+                    storageTypeRow(icon: "archivebox", label: "其他", bytes: storage.otherBytes)
+                }
+                .padding(.vertical, 2)
+
+                Text(storage.runCount > 0
+                     ? "共 \(storage.runCount) 个课程输出目录，清理后不可恢复。"
+                     : "输出目录为空，无需清理。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    confirmCleanup()
+                } label: {
+                    Label("一键清理", systemImage: "trash")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.minimalGhostRed)
+                .disabled(storage.isEmpty)
+                .opacity(storage.isEmpty ? 0.45 : 1)
+                .animation(.easeOut(duration: 0.15), value: storage.isEmpty)
+                .help("删除输出目录下所有已生成的课程输出与 debug 文件夹，释放磁盘空间")
+            }
+        }
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.4), lineWidth: 1)
+        )
+        .onAppear { storage = app.storageUsage() }
+    }
+
+    /// 类型占用行：图标 + 类型名 + 占用大小
+    private func storageTypeRow(icon: String, label: String, bytes: Int64) -> some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.subheadline)
+                    .foregroundStyle(app.theme.primary)
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text(app.formatBytes(bytes))
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(bytes > 0 ? Color.primary : Color.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// 一键清理的二次确认（NSAlert，避免同一视图链多个 SwiftUI alert 冲突导致失效）
+    private func confirmCleanup() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "确认清理存储空间？"
+        alert.informativeText = storage.runCount > 0
+            ? "将永久删除输出目录下的 \(storage.runCount) 个课程输出目录及 debug 文件夹（共 \(app.formatBytes(storage.totalBytes))），删除后不可恢复。是否继续？"
+            : "输出目录为空，没有可清理的内容。"
+        alert.addButton(withTitle: "清理")
+        alert.addButton(withTitle: "取消")
+        if let window = NSApp.keyWindow {
+            alert.beginSheetModal(for: window) { response in
+                guard response == .alertFirstButtonReturn else { return }
+                app.cleanupOutputFolders()
+                storage = app.storageUsage()
+            }
+        } else {
+            let response = alert.runModal()
+            guard response == .alertFirstButtonReturn else { return }
+            app.cleanupOutputFolders()
+            storage = app.storageUsage()
         }
     }
 
@@ -451,5 +592,26 @@ private struct ThemeCapsuleTabs<Tag: Hashable>: View {
                     Capsule().strokeBorder(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
                 )
         )
+    }
+}
+
+/// 取用宿主窗口的 NSViewRepresentable：视图加入窗口层级后回传其 NSWindow，
+/// 用来在每次打开设置窗口时强制将其居中（回调在主线程执行）。
+private struct WindowCenterer: NSViewRepresentable {
+    var onWindow: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            self.onWindow(view.window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        // 视图重新布局时再次取用窗口（此时 window 非 nil），确保居中生效
+        DispatchQueue.main.async {
+            self.onWindow(nsView.window)
+        }
     }
 }

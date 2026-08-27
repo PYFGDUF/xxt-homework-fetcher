@@ -27,6 +27,11 @@ final class AppState {
 
     // 运行状态
     var isRunning = false
+    // 停止二次确认态：第一次点「停止」置为 true（按钮变「确认停止」），第二次点才真正停止
+    var stopArmed = false
+    // 确认态超时自动复位用的可取消任务（.now + 10s）
+    private var stopResetWorkItem: DispatchWorkItem?
+    private let stopConfirmTimeout: TimeInterval = 10
     // 是否已保存有效登录态（state.json），应用启动时由引擎查询初始化，
     // 用于设置界面在「登录学习通 / 退出登录」之间动态切换。
     var isLoggedIn = false
@@ -195,6 +200,8 @@ final class AppState {
             guard let self else { return }
             self.isEngineBusy = false
             self.isRunning = false
+            self.stopArmed = false
+            self.cancelStopArmReset()
             self.appendLog("引擎已退出", level: "error")
         }
         // 启动 60fps 插值器：让 displayProgress 持续向 progressTarget 平滑逼近
@@ -274,6 +281,8 @@ final class AppState {
         case .done:
             isEngineBusy = false
             isRunning = false
+            stopArmed = false
+            cancelStopArmReset()
             isLoggingIn = false
             isVerifyingLogin = false
             loginQRImageB64 = ""
@@ -450,6 +459,8 @@ final class AppState {
         fetchStarted = true
         isEngineBusy = true
         isRunning = true
+        stopArmed = false
+        cancelStopArmReset()
         appendLog("开始抓取 \(selectedHomeworkIDs.count) 个作业…", level: "info")
         engine.send("start", params: ["homework_ids": Array(selectedHomeworkIDs)])
     }
@@ -457,6 +468,38 @@ final class AppState {
     func stopTask() {
         engine.send("stop")
         appendLog("请求停止…", level: "warn")
+    }
+
+    /// 两个停止入口点击逻辑：第一次点击仅进入确认态（按钮变「确认停止」），
+    /// 第二次点击才真正发送停止指令，防止误触「停止」导致已抓取进度被中断。
+    /// 不使用系统确认框，纯由按钮文案/状态反馈，点击即时可见。
+    func stopAction() {
+        if stopArmed {
+            cancelStopArmReset()
+            stopArmed = false
+            stopTask()
+        } else {
+            stopArmed = true
+            appendLog("再次点击「确认停止」以停止当前任务。", level: "warn")
+            scheduleStopArmReset()
+        }
+    }
+
+    /// 确认态超时自动复位：10 秒内未点击「确认停止」则恢复为「停止」。
+    private func scheduleStopArmReset() {
+        cancelStopArmReset()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.stopArmed else { return }
+            self.stopArmed = false
+            self.appendLog("未在 10 秒内确认，已自动恢复为「停止」。如需停止请再次点击。", level: "debug")
+        }
+        stopResetWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + stopConfirmTimeout, execute: workItem)
+    }
+
+    private func cancelStopArmReset() {
+        stopResetWorkItem?.cancel()
+        stopResetWorkItem = nil
     }
 
     /// 本次抓取耗时（结果卡展示）；未完成或异常时返回空
@@ -565,6 +608,127 @@ final class AppState {
         let rel = lastOutputDir.isEmpty ? (settings.outputDir.isEmpty ? fallback : settings.outputDir) : lastOutputDir
         let dir = rel.hasPrefix("/") ? rel : "\(fallback)"
         NSWorkspace.shared.open(URL(fileURLWithPath: dir))
+    }
+
+    // MARK: - 存储空间
+
+    /// 输出目录存储占用统计（按类型分类）。
+    struct StorageUsage {
+        var totalBytes: Int64 = 0
+        var wordBytes: Int64 = 0
+        var imageBytes: Int64 = 0
+        var pdfBytes: Int64 = 0
+        var otherBytes: Int64 = 0
+        /// 已生成的课程输出子目录数（不含 debug）
+        var runCount: Int = 0
+        var isEmpty: Bool { totalBytes <= 0 }
+    }
+
+    /// 计入「图片」类型的文件扩展名
+    private static let imageExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "gif", "webp", "heic", "bmp", "tiff", "tif"
+    ]
+
+    /// 当前输出目录根路径（兜底 ~/Desktop/out）
+    func outputRootPath() -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let dir = settings.outputDir
+        if !dir.isEmpty && dir.hasPrefix("/") { return dir }
+        return "\(home)/Desktop/out"
+    }
+
+    /// 字节数格式化（B / KB / MB / GB）
+    func formatBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    /// 统计输出目录存储占用，按 Word / 图片 / PDF / 其他分类。目录不存在或不可访问时返回空统计。
+    func storageUsage() -> StorageUsage {
+        var usage = StorageUsage()
+        let fm = FileManager.default
+        let root = outputRootPath()
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: root, isDirectory: &isDir), isDir.boolValue else { return usage }
+
+        // 顶层课程输出子目录数（不含 debug 与隐藏文件）
+        if let entries = try? fm.contentsOfDirectory(atPath: root) {
+            usage.runCount = entries.filter { name in
+                guard !name.hasPrefix(".") else { return false }
+                guard name != "debug" else { return false }
+                var d: ObjCBool = false
+                return fm.fileExists(atPath: root + "/" + name, isDirectory: &d) && d.boolValue
+            }.count
+        }
+
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
+        guard let en = fm.enumerator(at: URL(fileURLWithPath: root),
+                                     includingPropertiesForKeys: keys,
+                                     options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return usage }
+        var total: Int64 = 0
+        for case let url as URL in en {
+            guard let values = try? url.resourceValues(forKeys: Set(keys)),
+                  let isRegular = values.isRegularFile, isRegular,
+                  let size = values.fileSize else { continue }
+            let bytes = Int64(size)
+            total += bytes
+            let ext = url.pathExtension.lowercased()
+            if ext == "docx" {
+                usage.wordBytes += bytes
+            } else if ext == "pdf" {
+                usage.pdfBytes += bytes
+            } else if Self.imageExtensions.contains(ext) {
+                usage.imageBytes += bytes
+            } else {
+                usage.otherBytes += bytes
+            }
+        }
+        usage.totalBytes = total
+        return usage
+    }
+
+    /// 递归统计某目录总字节数。
+    private func directoryBytes(at path: String) -> Int64 {
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
+        guard let en = fm.enumerator(at: URL(fileURLWithPath: path),
+                                     includingPropertiesForKeys: keys,
+                                     options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return 0 }
+        var total: Int64 = 0
+        for case let url as URL in en {
+            guard let values = try? url.resourceValues(forKeys: Set(keys)),
+                  let isRegular = values.isRegularFile, isRegular,
+                  let size = values.fileSize else { continue }
+            total += Int64(size)
+        }
+        return total
+    }
+
+    /// 清理输出目录下的全部课程输出子目录与 debug 目录（保留输出根目录本身）。
+    /// 返回被释放的字节数（>0 表示实际清理了内容）。
+    @discardableResult
+    func cleanupOutputFolders() -> Int64 {
+        let fm = FileManager.default
+        let root = outputRootPath()
+        guard let entries = try? fm.contentsOfDirectory(atPath: root) else { return 0 }
+        var freed: Int64 = 0
+        for name in entries {
+            guard !name.hasPrefix("."), name != ".DS_Store" else { continue }
+            let path = root + "/" + name
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else { continue }
+            freed += directoryBytes(at: path)
+            do {
+                try fm.removeItem(atPath: path)
+            } catch {
+                appendLog("清理失败：\(name) — \(error.localizedDescription)", level: "error")
+            }
+        }
+        if freed > 0 {
+            appendLog("已清理输出目录，释放 \(formatBytes(freed))", level: "success")
+        } else {
+            appendLog("输出目录已无可清理内容", level: "info")
+        }
+        return freed
     }
 
     func clearLogs() {

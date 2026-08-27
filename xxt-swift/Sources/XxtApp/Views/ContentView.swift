@@ -131,9 +131,9 @@ struct ContentView: View {
                             .help("抓取进行中")
                     }
                     Button {
-                        app.stopTask()
+                        app.stopAction()
                     } label: {
-                        Label("停止", systemImage: "stop.fill")
+                        Label(app.stopArmed ? "确认停止" : "停止", systemImage: "stop.fill")
                     }
                     .tint(.red)
                     .disabled(!app.isRunning)
