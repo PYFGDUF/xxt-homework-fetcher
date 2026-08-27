@@ -11,7 +11,9 @@ import sys
 
 def setup_logging() -> logging.Logger:
     """配置分级日志：文件按大小轮转，控制台只输出 INFO 及以上。"""
-    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
+    # 日志落到运行时数据根目录（当前 cwd：Swift 引擎为 ~/Library/Application Support/XxtApp/），
+    # 避免 PyInstaller 冻结态写进 Bundle 的 _internal/（会破坏代码签名封印）。
+    log_dir = os.path.join(os.getcwd(), "logs")
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, "chaoxing_spider.log")
 

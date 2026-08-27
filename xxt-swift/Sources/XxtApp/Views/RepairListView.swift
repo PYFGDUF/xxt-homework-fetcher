@@ -33,7 +33,7 @@ private struct RepairRow: View {
                 Text(item.title)
                     .font(.body)
                 Text(URL(string: item.url)?.host ?? item.url)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                 Text(item.path)
                     .font(.caption2)
@@ -66,7 +66,7 @@ struct HistoryView: View {
                                 Text(item.title)
                                 if let word = item.wordFile {
                                     Text(word)
-                                        .font(.caption)
+                                        .font(.footnote)
                                         .foregroundStyle(.secondary)
                                         .lineLimit(1)
                                 }

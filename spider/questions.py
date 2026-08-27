@@ -8,7 +8,7 @@ import traceback
 
 from playwright.sync_api import Page
 
-from core.config import ACTION_TIMEOUT, MAX_QUESTION_PAGES, should_stop
+from core.config import ACTION_TIMEOUT, MAX_QUESTION_PAGES, should_stop, _report_status
 from core.utils import (
     _clean_alt_for_markdown,
     _clean_extracted_text,
@@ -78,8 +78,8 @@ def extract_text_with_images(element) -> str:
         """)
         if text:
             return _clean_extracted_text(text)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"    [debug] extract_text_with_images JS 方案失败，回退 innerHTML：{e}")
 
     # 方案2：fallback 到 innerHTML 正则提取（兼容 element.evaluate 偶发失败）
     try:
@@ -98,8 +98,8 @@ def extract_text_with_images(element) -> str:
         text = _clean_extracted_text(text)
         if text:
             return text
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"    [debug] extract_text_with_images innerHTML 方案失败：{e}")
 
     # 方案3：兜底纯文本
     try:
@@ -268,10 +268,11 @@ def extract_answer_fallback(item, options: list) -> str:
     return ""
 
 
-def extract_questions_from_page(page_or_frame) -> list:
+def extract_questions_from_page(page_or_frame, progress_hook=None) -> list:
     """
     提取当前 frame 中的题目和答案。
     针对学习通 work/view 页结构优化：.questionLi.singleQuesId 为单题容器。
+    progress_hook: 可选 (idx, total) 回调，用于页内逐题上报进度（index 从 1 开始）。
     """
     questions = []
     print("    [extract] 开始识别题目容器...")
@@ -315,6 +316,12 @@ def extract_questions_from_page(page_or_frame) -> list:
         items = items[:200]
 
     for idx, item in enumerate(items, 1):
+        # 每题处理前上报页内进度（即便本题解析失败也推进，保证单调）
+        if progress_hook:
+            try:
+                progress_hook(idx, len(items))
+            except Exception:
+                pass
         try:
             # 题干：优先带图的文本
             title = ""
@@ -452,26 +459,22 @@ def click_reveal_answer(page_or_frame) -> bool:
         '.btn-answer',
         '.seeAns',
     ]
-    # 单页最多尝试点击次数，防止程序化点击死循环
-    max_reveal_clicks = 200
-    clicked = False
-    for _ in range(max_reveal_clicks):
-        pressed = False
-        for sel in reveal_selectors:
+    # 提速优化：一次性定位本页所有可见展开按钮并依次点击，不再「点一个等 600ms」，
+    # 全部点完后再统一 wait_stable 等答案渲染稳定。
+    pressed = False
+    try:
+        for el in page_or_frame.locator(", ".join(reveal_selectors)).all():
             try:
-                el = page_or_frame.locator(sel).first
-                if el.count() and el.is_visible() and not el.is_disabled():
-                    print(f'    点击查看答案按钮：{sel}')
+                if el.is_visible() and not el.is_disabled():
                     el.click(timeout=ACTION_TIMEOUT)
-                    clicked = True
                     pressed = True
-                    wait_stable(page_or_frame, 600)
-                    break
             except Exception:
                 continue
-        if not pressed:
-            break
-    return clicked
+    except Exception:
+        return pressed
+    if pressed:
+        wait_stable(page_or_frame, 1200)
+    return pressed
 
 
 def click_start_button(page_or_frame) -> bool:
@@ -553,33 +556,102 @@ def get_question_frame(page_or_frame):
     return qframe
 
 
-def extract_all_questions(page_or_frame) -> list:
+# 单作业进度：题目抓取阶段所占总进度的起止区间（0~1）
+# 前段（0~_HW_EXTRACT_START）为打开作业阶段，由 open_progress_reporter 平滑上报
+# （等待 iframe 稳定/展开答案），避免进度停在 0%；末段（_HW_EXTRACT_END~1）在 runner 上报、completed 置满。
+# 区间内按翻页数自适应估算，保证进度单调递增、最后一页贴到区间末尾。
+_HW_EXTRACT_START = 0.10
+_HW_EXTRACT_END = 0.95
+
+
+def open_progress_reporter(title: str, url: str):
+    """返回"打开作业阶段"的进度上报器（单作业），带 1% 节流避免高频 NDJSON。
+
+    调用方传 0..1 表示当前打开阶段内部工作量，映射到 [0, _HW_EXTRACT_START]。同一作业的
+    多个子步骤（等待 iframe、点开始、定位 frame、展开答案）复用同一个 writer，保证整段
+    单调递增不回退。
+    """
+    last = {"v": -1.0}
+
+    def _report(fract: float):
+        v = min(_HW_EXTRACT_START, _HW_EXTRACT_START * max(0.0, min(1.0, fract)))
+        if v - last["v"] >= 0.005 or v >= _HW_EXTRACT_START:
+            last["v"] = v
+            try:
+                _report_status(url or "", title, "in_progress", progress=v)
+            except Exception:
+                pass
+
+    return _report
+
+
+def _report_homework_progress(title: str, url: str, fract: float):
+    """上报单个作业的内部进度（0~1），供 GUI 行级展示百分比。
+    fract 为题目抓取阶段内部的进度（0~1），按 _HW_EXTRACT_START/_HW_EXTRACT_END 映射到作业总进度。"""
+    try:
+        v = _HW_EXTRACT_START + (_HW_EXTRACT_END - _HW_EXTRACT_START) * max(0.0, min(1.0, fract))
+        _report_status(url or "", title, "in_progress", progress=v)
+    except Exception:
+        pass
+
+
+def extract_all_questions(page_or_frame, title: str = "", url: str = "",
+                          deadline: float = 0) -> list:
     """
     进入作业页后，点击开始按钮，切换到题目 iframe，翻页抓取所有题目。
+    每处理完一页会上报一次该作业的内部进度，供 GUI 展示单作业百分比。
+
+    deadline：可选的墙钟截止时刻（time.time()+秒）。翻页循环超时即提前截断并保留
+    已抓到的题目，避免单个作业卡死拖垮整个课程；0 表示不限制。
     """
     all_questions = []
     page_idx = 1
 
-    # 等待题目 iframe 加载
-    print("    等待题目 iframe/页面加载...")
-    wait_stable(page_or_frame, 4000)
+    # 打开阶段进度上报器：把 0..1 打开工作量映射到 [0, _HW_EXTRACT_START]
+    rep = open_progress_reporter(title, url)
 
-    # 若页面有"开始作答"等按钮，先点击（主文档层）
+    # 等待题目 iframe 加载（切片上报，覆盖打开阶段前段，消除进度停在 0% 的空窗）
+    print("    等待题目 iframe/页面加载...")
+    wait_stable(page_or_frame, 4000, on_progress=lambda f: rep(0.7 * f))
+
+    # 若页面有“开始作答”等按钮，先点击（主文档层）
     click_start_button(page_or_frame)
+    rep(0.78)
 
     qframe = get_question_frame(page_or_frame)
     print(f"    题目所在 frame URL：{qframe.url[:120]}")
+    rep(0.86)
+
     # 尝试展开“查看答案”——必须在题目 iframe 内点击，主文档 locator 到不了 frame 内部
     click_reveal_answer(qframe)
+    rep(0.94)
+
+    # ---- 页内逐题进度的全局单调模型 ----
+    # p = 已完整抓完页数 + 当前页已完成题目占比（0..1）；
+    # 全局抽取进度 = p/(p+1)，p 随页内 idx 递增与翻页只会上升，天然单调不回退；
+    # 映射到 [_HW_EXTRACT_START, _HW_EXTRACT_END] 区间，最后一页再贴到区间末尾。
+    pages_done = 0          # 已完整抓完的页数
+    per_page_reported = False  # 当前页是否已通过逐题钩子上报（JS 兜底时不逐题）
+    timed_out = False       # 是否因超过 deadline 提前截断
+
+    def _per_question_progress(idx, n):
+        nonlocal per_page_reported
+        per_page_reported = True
+        p = pages_done + idx / max(n, 1)
+        _report_homework_progress(title, url, p / (p + 1))
 
     while page_idx <= MAX_QUESTION_PAGES:
         if should_stop():
             print("\n[info] 收到停止信号，中断题目抓取")
             break
+        if deadline and time.time() >= deadline:
+            timed_out = True
+            break
         print(f"    正在抓取第 {page_idx} 页...")
         t0 = time.time()
+        per_page_reported = False  # 每页开始时复位逐题标记
         try:
-            questions = extract_questions_from_page(qframe)
+            questions = extract_questions_from_page(qframe, progress_hook=_per_question_progress)
         except Exception as e:
             print(f"    [warn] extract_questions_from_page 异常：{e}")
             traceback.print_exc()
@@ -608,9 +680,19 @@ def extract_all_questions(page_or_frame) -> list:
         all_questions.extend(questions)
         print(f"    第 {page_idx} 页抓到 {len(questions)} 题，累计 {len(all_questions)} 题")
 
-        if not has_next_page(qframe):
+        # JS 兜底路径未走逐题钩子：把本页整体计为一个进度块，保证仍单调推进
+        if not per_page_reported:
+            _per_question_progress(1, 1)
+
+        # 最后一页：贴到题目抓取区间末尾（映射到 _HW_EXTRACT_END）
+        has_more = has_next_page(qframe)
+        if not has_more:
+            _report_homework_progress(title, url, 1.0)
             print("    没有下一页了")
             break
+
+        # 进入下一页：本页计入已完成页数，下一页逐题钩子基于新的 pages_done 继续单调递增
+        pages_done += 1
 
         if not click_next_page(qframe):
             print("    点击下一页失败")
@@ -623,6 +705,8 @@ def extract_all_questions(page_or_frame) -> list:
         # 翻页后可能仍需展开答案（在 iframe 内部点击）
         click_reveal_answer(qframe)
 
-    if page_idx > MAX_QUESTION_PAGES:
+    if timed_out:
+        print(f"\n[warn] 该作业抓取超时，已提前截断（保留已抓 {len(all_questions)} 题，避免拖垮整个课程）")
+    elif page_idx > MAX_QUESTION_PAGES:
         print(f"\n[warn] 题目页数超过上限 {MAX_QUESTION_PAGES}，已停止翻页")
     return all_questions

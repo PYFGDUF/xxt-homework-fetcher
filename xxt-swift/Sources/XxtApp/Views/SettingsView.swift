@@ -10,22 +10,23 @@ struct SettingsView: View {
     @State private var huanxinTab: Int = 0
 
     private struct DraftSettings {
-        var courseURL: String
         var outputDir: String
         var autoExportPDF: Bool
         var forceRegrab: Bool
         var openDirOnComplete: Bool
         var playSoundOnComplete: Bool
         var notifyOnComplete: Bool
+        var showSourceURL: Bool
         var appearance: String
     }
 
     init() {
         // 从环境读取较繁琐，改为在 body onAppear/onChange 同步
-        _draft = State(initialValue: DraftSettings(courseURL: "", outputDir: "", autoExportPDF: false,
+        _draft = State(initialValue: DraftSettings(outputDir: "", autoExportPDF: false,
                                                    forceRegrab: false,
                                                    openDirOnComplete: false, playSoundOnComplete: true,
-                                                   notifyOnComplete: true, appearance: "system"))
+                                                   notifyOnComplete: true, showSourceURL: true,
+                                                   appearance: "system"))
     }
 
     var body: some View {
@@ -36,8 +37,7 @@ struct SettingsView: View {
                 classicBody
             }
         }
-        .frame(minWidth: 500, minHeight: 380)
-        .preferredColorScheme(app.preferredColorScheme)
+        .frame(minWidth: 430, maxWidth: 540, minHeight: 400)
         .alert("确认退出登录？", isPresented: $confirmLogout) {
             Button("取消", role: .cancel) { }
             Button("退出登录", role: .destructive) {
@@ -49,11 +49,12 @@ struct SettingsView: View {
         }
         .onAppear {
             let s = app.settings
-            draft = DraftSettings(courseURL: s.courseURL, outputDir: s.outputDir,
+            draft = DraftSettings(outputDir: s.outputDir,
                                   autoExportPDF: s.autoExportPDF,
                                   forceRegrab: s.forceRegrab, openDirOnComplete: s.openDirOnComplete,
                                   playSoundOnComplete: app.playSoundOnComplete,
                                   notifyOnComplete: app.notifyOnComplete,
+                                  showSourceURL: s.showSourceURL,
                                   appearance: s.appearance)
         }
     }
@@ -63,16 +64,20 @@ struct SettingsView: View {
     private var classicBody: some View {
         TabView {
             Form {
-                Section("抓取") {
-                    TextField("课程 URL", text: $draft.courseURL, axis: .vertical)
-                        .lineLimit(2...3)
-                }
-
                 Section("输出") {
                     HStack {
                         TextField("输出目录", text: $draft.outputDir)
                         chooseDirButton
                     }
+                }
+
+                Section("外观") {
+                    Picker("外观", selection: $draft.appearance) {
+                        Text("跟随系统").tag("system")
+                        Text("浅色").tag("light")
+                        Text("深色").tag("dark")
+                    }
+                    .pickerStyle(.segmented)
                 }
             }
             .formStyle(.grouped)
@@ -85,15 +90,7 @@ struct SettingsView: View {
                     Toggle("抓取完成后自动打开输出目录", isOn: $draft.openDirOnComplete)
                     Toggle("抓取完成后播放提示音", isOn: $draft.playSoundOnComplete)
                     Toggle("抓取完成后发送系统通知", isOn: $draft.notifyOnComplete)
-                }
-
-                Section("外观") {
-                    Picker("外观", selection: $draft.appearance) {
-                        Text("跟随系统").tag("system")
-                        Text("浅色").tag("light")
-                        Text("深色").tag("dark")
-                    }
-                    .pickerStyle(.segmented)
+                    Toggle("文档中展示来源 URL", isOn: $draft.showSourceURL)
                 }
 
                 Section("登录") {
@@ -118,12 +115,22 @@ struct SettingsView: View {
             ScrollView {
                 VStack(spacing: 14) {
                     switch huanxinTab {
-                    case 0: generalCard
-                    case 1: optionsCard
-                    default: loginCard
+                    case 0:
+                        generalCard.transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .bottom)),
+                            removal: .opacity.combined(with: .move(edge: .top))))
+                    case 1:
+                        optionsCard.transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .bottom)),
+                            removal: .opacity.combined(with: .move(edge: .top))))
+                    default:
+                        loginCard.transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .bottom)),
+                            removal: .opacity.combined(with: .move(edge: .top))))
                     }
                 }
-                .padding(24)
+                .animation(.easeInOut(duration: 0.28), value: huanxinTab)
+                .padding(20)
             }
 
             Divider()
@@ -147,30 +154,13 @@ struct SettingsView: View {
         .padding(.top, 18)
     }
 
-    /// 通用：课程 URL + 输出目录（图标化信息头 + 前导图标字段）
+    /// 通用：输出目录（图标化信息头 + 前导图标字段）
     private var generalCard: some View {
-        settingSection(icon: "link", title: "基本信息", subtitle: "课程抓取的来源与文件保存位置") {
+        settingSection(icon: "folder", title: "输出目录", subtitle: "抓取文件的保存位置") {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("课程 URL")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    HStack(spacing: 8) {
-                        Image(systemName: "globe")
-                            .font(.body)
-                            .foregroundStyle(.tertiary)
-                        TextField("粘贴课程 URL，点击加载作业列表", text: $draft.courseURL, axis: .vertical)
-                            .textFieldStyle(.plain)
-                            .lineLimit(2...3)
-                    }
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, 9)
-                    .background(fieldBackground)
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
                     Text("输出目录")
-                        .font(.caption.weight(.medium))
+                        .font(.callout.weight(.medium))
                         .foregroundStyle(.secondary)
                     HStack(spacing: 8) {
                         Image(systemName: "folder")
@@ -185,11 +175,27 @@ struct SettingsView: View {
                     .padding(.vertical, 8)
                     .background(fieldBackground)
                 }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("外观")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    ThemeCapsuleTabs(
+                        theme: app.theme,
+                        options: [
+                            (label: "跟随系统", icon: "circle.lefthalf.filled", value: "system"),
+                            (label: "浅色", icon: "sun.max", value: "light"),
+                            (label: "深色", icon: "moon.fill", value: "dark")
+                        ],
+                        selection: $draft.appearance
+                    )
+                }
+                .padding(.top, 4)
             }
         }
     }
 
-    /// 选项：图标徽标开关行 + 外观分段
+    /// 选项：图标徽标开关行（外观已移至「通用」）
     private var optionsCard: some View {
         settingSection(icon: "slider.horizontal.3", title: "抓取选项", subtitle: "作业保存与完成的反馈方式") {
             VStack(spacing: 0) {
@@ -199,26 +205,12 @@ struct SettingsView: View {
                 rowDivider
                 settingToggle("folder", title: "完成后打开输出目录", isOn: $draft.openDirOnComplete)
                 rowDivider
+                settingToggle("link", title: "展示来源 URL", subtitle: "在文档标题下方显示：来源：链接", isOn: $draft.showSourceURL)
+                rowDivider
                 settingToggle("speaker.wave.2", title: "完成播放提示音", isOn: $draft.playSoundOnComplete)
                 rowDivider
                 settingToggle("bell", title: "完成发送系统通知", isOn: $draft.notifyOnComplete)
             }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("外观")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                ThemeCapsuleTabs(
-                    theme: app.theme,
-                    options: [
-                        (label: "跟随系统", icon: "circle.lefthalf.filled", value: "system"),
-                        (label: "浅色", icon: "sun.max", value: "light"),
-                        (label: "深色", icon: "moon.fill", value: "dark")
-                    ],
-                    selection: $draft.appearance
-                )
-            }
-            .padding(.top, 18)
         }
     }
 
@@ -232,7 +224,7 @@ struct SettingsView: View {
                     Text(app.isLoggedIn
                          ? "登录态有效，抓取将自动使用已保存的登录信息。"
                          : "登录后可开始抓取作业，登录状态会自动保存在本地。")
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
                 .padding(.top, 2)
@@ -295,7 +287,7 @@ struct SettingsView: View {
                     Text(title)
                         .font(.body.weight(.semibold))
                     Text(subtitle)
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
@@ -328,10 +320,10 @@ struct SettingsView: View {
                 IconBadge(symbol: icon, tint: app.theme.primary, soft: app.theme.primary.opacity(0.10))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.body)
+                        .font(.body.weight(.medium))
                     if let subtitle {
                         Text(subtitle)
-                            .font(.caption)
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -379,11 +371,11 @@ struct SettingsView: View {
 
     private func writeBack() {
         var s = app.settings
-        s.courseURL = draft.courseURL
         s.outputDir = draft.outputDir
         s.autoExportPDF = draft.autoExportPDF
         s.forceRegrab = draft.forceRegrab
         s.openDirOnComplete = draft.openDirOnComplete
+        s.showSourceURL = draft.showSourceURL
         s.appearance = draft.appearance
         app.settings = s
         app.setPlaySound(draft.playSoundOnComplete)

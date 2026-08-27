@@ -44,9 +44,13 @@ struct ContentView: View {
         } message: {
             Text(app.imageFailMessage)
         }
-        .preferredColorScheme(app.preferredColorScheme)
         .onAppear {
+            app.applyAppearance()
             app.startEngine()
+        }
+        // 外观变化时一次性设置窗口外观（替代 .preferredColorScheme 逐渲染 re-apply，规避重绘闪烁）
+        .onChange(of: app.preferredColorScheme) {
+            app.applyAppearance()
         }
     }
 
@@ -226,7 +230,6 @@ struct ContentView: View {
         } message: {
             Text(app.imageFailMessage)
         }
-        .preferredColorScheme(app.preferredColorScheme)
         .onAppear {
             app.startEngine()
         }
@@ -291,9 +294,9 @@ struct ContentView: View {
             HStack(spacing: 8) {
                 Image(systemName: "folder")
                     .foregroundStyle(.secondary)
-                    .font(.caption)
+                    .font(.body)
                 Text(app.settings.outputDir.isEmpty ? "未设置输出目录" : app.settings.outputDir)
-                    .font(.caption.monospaced())
+                    .font(.callout.monospaced())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -312,7 +315,7 @@ struct ContentView: View {
                         .progressViewStyle(.linear)
                         .tint(.accentColor)
                     Text("\(app.progressCurrent)/\(app.progressTotal)")
-                        .font(.caption.monospaced())
+                        .font(.callout.monospaced())
                         .foregroundStyle(.secondary)
                         .fixedSize()
                 }
@@ -326,7 +329,7 @@ struct ContentView: View {
                     ProgressView()
                         .controlSize(.small)
                     Text("正在准备抓取…")
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
             } else if app.isEngineBusy {
@@ -334,7 +337,7 @@ struct ContentView: View {
                     ProgressView()
                         .controlSize(.small)
                     Text("引擎启动中…")
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
             }

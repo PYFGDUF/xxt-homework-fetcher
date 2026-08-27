@@ -137,6 +137,10 @@ ENGINE_SRC="$PROJECT_DIR/../build/engine-pkg/dist/engine_xxt"
 if [ -d "$ENGINE_SRC" ]; then
     mkdir -p "$APP_BUNDLE/Contents/Resources/engine_xxt"
     cp -R "$ENGINE_SRC/." "$APP_BUNDLE/Contents/Resources/engine_xxt/"
+    # 剔除引擎运行时产物（progress.json / logs），防止残留在 Bundle 内被运行改写的封印破坏
+    # 代码签名校验（这些运行时文件在 Application Support 中生成，不该进 Bundle）。
+    rm -f "$APP_BUNDLE/Contents/Resources/engine_xxt/_internal/progress.json"
+    rm -rf "$APP_BUNDLE/Contents/Resources/engine_xxt/_internal/logs"
     MS_DIR="$APP_BUNDLE/Contents/Resources/ms-playwright"
     rm -rf "$MS_DIR"
     mkdir -p "$MS_DIR"
@@ -183,11 +187,11 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
         <string>en</string>
     </array>
     <key>CFBundleShortVersionString</key>
-    <string>2.0</string>
+    <string>2.1</string>
         <key>CFBundleVersion</key>
-        <string>2.0</string>
+        <string>2.1</string>
         <key>CFBundleGetInfoString</key>
-        <string>学习通作业爬取工具 v2.0 beta</string>
+        <string>学习通作业爬取工具 v2.1 beta</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSPrincipalClass</key>

@@ -17,6 +17,15 @@ from spider.browser import (
 from spider.questions import click_next_page, has_next_page
 
 
+# ---- 列表加载速度调参：降低固定等待下限，擦亮刷新速度 ----
+# wait_stable 已在 networkidle 之后做守卫等待，以下为额外硬等待上限，可在此整体调优。
+LIST_NAV_SETTLE_MS = 800        # 进入页面/goto 后守卫等待（原 3000）
+LIST_TAB_SETTLE_MS = 1200       # 进入作业Tab后的守卫等待（原 5000）
+LIST_LAZY_SETTLE_SEC = 0.8      # 列表懒加载后等待稳定（原 2）
+# C方案：翻页统计改为「每页只 wait/scroll/sleep 一次」——单独一次足够覆盖懒加载的等待，
+# 不再叠加 extract_homework_items 内部的另一次 wait+scroll+sleep(0.8)。
+LIST_PAGE_TURN_SETTLE_SEC = 0.8  # 分页翻页后单次稳定等待，同时充当懒加载等待（原 0.4 + 内部 0.8 叠加）
+
 
 def enter_homework_tab(page: Page) -> bool:
     """尝试点击课程页里的"作业/任务"标签。"""
@@ -33,7 +42,7 @@ def enter_homework_tab(page: Page) -> bool:
             if el.count() and el.is_visible():
                 print(f'  点击标签：{sel}')
                 el.click(timeout=ACTION_TIMEOUT)
-                wait_stable(page, 3000)
+                wait_stable(page, LIST_NAV_SETTLE_MS)
                 return True
         except Exception:
             continue
@@ -67,19 +76,24 @@ def is_boilerplate_title(title: str) -> bool:
     return any(k in title for k in _BOILERPLATE_KEYWORDS)
 
 
-def extract_homework_items(page_or_frame) -> list:
+def extract_homework_items(page_or_frame, skip_lazy: bool = False) -> list:
     """
     在课程页/作业列表 iframe 中提取所有作业/测验入口。
     返回每个作业的 {title, url, click_text}。
     url 可能为空，表示需要点击元素进入。
+
+    skip_lazy: 为 True 时跳过开头的 wait/scroll/sleep 懒加载处理。
+    翻页统计场景下由 collect_all_homeworks 先在每一页统一做一次 wait+scroll+sleep，
+    故此处不再重复处理（C方案：去重分页每页的 redundant 懒加载）。
     """
     items = []
     base_url = page_or_frame.url
 
     # 先等 iframe 内容加载并滚动到底，触发懒加载
-    wait_for_iframe_content(page_or_frame, 10_000)
-    scroll_frame_to_bottom(page_or_frame)
-    time.sleep(2)
+    if not skip_lazy:
+        wait_for_iframe_content(page_or_frame, 10_000)
+        scroll_frame_to_bottom(page_or_frame)
+        time.sleep(LIST_LAZY_SETTLE_SEC)
 
     # 0. 优先：提取学习通作业列表 li[data*="work/task"] 或 li[data*="exam/test"]
     try:
@@ -335,23 +349,20 @@ def find_homework_list_frame(page: Page):
     return page
 
 
-def collect_all_homeworks(list_frame, on_page=None) -> list:
+def collect_all_homeworks(list_frame, on_page=None, initial_homeworks=None) -> list:
     """翻页收集所有作业条目（仅统计，不进入作业），返回带 list_url 的作业列表。
 
     on_page: 可选回调，每翻完一页后以「本页新增条目列表」调用一次，
              供 GUI 即时增量展示，无需等待全部翻页完成。
+    initial_homeworks: 调用方已提取好的第 1 页条目。传入后跳过对第 1 页的重复提取，
+             直接从第 2 页开始翻页（提速：避免首帧被 extract+scroll+sleep 重复处理一次）。
     """
     all_homeworks = []
     seen_titles = set()
-    page_num = 1
-    while page_num <= MAX_HOMEWORK_PAGES:
-        if should_stop():
-            print("\n[info] 收到停止信号，中断统计")
-            break
-        print(f"\n===== 作业列表第 {page_num} 页（统计）=====")
-        homeworks = extract_homework_items(list_frame)
+
+    def _absorb(items) -> list:
         new = []
-        for h in homeworks:
+        for h in items:
             title = h.get("title", "")
             if not title or "智能分析" in title or title in seen_titles:
                 continue
@@ -359,10 +370,28 @@ def collect_all_homeworks(list_frame, on_page=None) -> list:
             h["list_url"] = list_frame.url
             new.append(h)
         all_homeworks.extend(new)
-        print(f"  本页 {len(new)} 个新作业，累计 {len(all_homeworks)} 个")
-        if on_page and new:
-            on_page(new)
+        return new
 
+    page_num = 1
+
+    # 第 1 页：优先用调用方已提取好的条目，否则本函数内部提取一次
+    if initial_homeworks:
+        new_first = _absorb(initial_homeworks)
+        print(f"  第 1 页（seed）{len(new_first)} 个新作业，累计 {len(all_homeworks)} 个")
+        if on_page and new_first:
+            on_page(new_first)
+    else:
+        print("\n===== 作业列表第 1 页（统计）=====")
+        new_first = _absorb(extract_homework_items(list_frame))
+        print(f"  第 1 页 {len(new_first)} 个新作业，累计 {len(all_homeworks)} 个")
+        if on_page and new_first:
+            on_page(new_first)
+
+    # 从第 2 页开始逐页翻页统计
+    while page_num <= MAX_HOMEWORK_PAGES:
+        if should_stop():
+            print("\n[info] 收到停止信号，中断统计")
+            break
         if not has_next_page(list_frame):
             print("  没有下一页了")
             break
@@ -372,7 +401,14 @@ def collect_all_homeworks(list_frame, on_page=None) -> list:
         page_num += 1
         wait_for_iframe_content(list_frame, 10_000)
         scroll_frame_to_bottom(list_frame)
-        time.sleep(1)
+        time.sleep(LIST_PAGE_TURN_SETTLE_SEC)
+
+        print(f"\n===== 作业列表第 {page_num} 页（统计）=====")
+        # C方案：上方已统一 wait+scroll+sleep 一次（含懒加载），此处跳过 extract 内部的重复懒加载
+        new = _absorb(extract_homework_items(list_frame, skip_lazy=True))
+        print(f"  第 {page_num} 页 {len(new)} 个新作业，累计 {len(all_homeworks)} 个")
+        if on_page and new:
+            on_page(new)
 
     if page_num > MAX_HOMEWORK_PAGES:
         print(f"\n[warn] 作业列表页数超过上限 {MAX_HOMEWORK_PAGES}，已停止翻页")

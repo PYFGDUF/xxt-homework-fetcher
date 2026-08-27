@@ -158,8 +158,16 @@ def _login_success_cb(message: str):
     _emit({"kind": "loginSuccess", "value": {"message": message or "登录成功"}})
 
 
-def _status_cb(url: str, title: str, status: str):
-    _emit({"kind": "status", "value": {"url": url, "title": title, "status": status}})
+def _status_cb(url: str, title: str, status: str, progress: float | None = None,
+               overall: float | None = None):
+    value = {"url": url, "title": title, "status": status}
+    # 作业内进度（0~1）仅在引擎有上报时携带，供 GUI 展示单个作业百分比进度
+    if progress is not None:
+        value["progress"] = round(progress, 3)
+    # 总进度（0~1）：由单作业进度实时映射而来，供 GUI 总进度条与单作业进度联动
+    if overall is not None:
+        value["overall"] = round(overall, 3)
+    _emit({"kind": "status", "value": value})
 
 
 def _image_fail_cb(failed: int, title: str):
@@ -222,6 +230,7 @@ def _normalize_settings(raw: dict) -> dict:
         "auto_export_pdf": cs.get_auto_export_pdf(),
         "force_regrab": cs.get_force_regrab(),
         "open_dir_on_complete": config.get_open_dir_on_complete(),
+        "show_source_url": config.get_show_source_url(),
         "appearance": _a,
     }
 
@@ -242,6 +251,8 @@ def _apply_settings(s: dict):
         cs.set_force_regrab(bool(s["force_regrab"]))
     if "open_dir_on_complete" in s:
         config.set_open_dir_on_complete(bool(s["open_dir_on_complete"]))
+    if "show_source_url" in s:
+        config.set_show_source_url(bool(s["show_source_url"]))
     if s.get("appearance") in ("system", "light", "dark"):
         cs.set_appearance(str(s["appearance"]))
 

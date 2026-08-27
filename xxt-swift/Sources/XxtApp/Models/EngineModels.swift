@@ -7,6 +7,7 @@ struct EngineSettings: Codable, Equatable {
     var autoExportPDF: Bool = false
     var forceRegrab: Bool = false
     var openDirOnComplete: Bool = true
+    var showSourceURL: Bool = true
     var appearance: String = "system"
 
     enum CodingKeys: String, CodingKey {
@@ -15,6 +16,7 @@ struct EngineSettings: Codable, Equatable {
         case autoExportPDF = "auto_export_pdf"
         case forceRegrab = "force_regrab"
         case openDirOnComplete = "open_dir_on_complete"
+        case showSourceURL = "show_source_url"
         case appearance
     }
 }
@@ -62,6 +64,8 @@ struct EngineEventValue: Decodable {
     var outputDir: String?
     var url: String?
     var status: String?
+    var progress: Double?      // 单个作业内部进度 0~1（status 事件附带）
+    var overall: Double?       // 总进度 0~1（由单作业进度实时映射，供总进度条联动）
     var installed: Bool?
     var imageB64: String?
     var failed: Int?
@@ -70,8 +74,9 @@ struct EngineEventValue: Decodable {
         case message, level, current, total, title, items, success
         case requestLogin = "request_login"
         case outputDir = "output_dir"
-        case url, status, installed, failed
+        case url, status, installed, failed, overall
         case imageB64 = "image_b64"
+        case progress
     }
 }
 
@@ -80,11 +85,12 @@ struct HomeworkItem: Decodable, Identifiable, Hashable {
     let id: String
     var title: String
     var status: String
+    var progress: Double       // 单个作业内部进度 0~1（引擎 status 事件上报）
     var url: String?
     var listURL: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, title, status, url
+        case id, title, status, url, progress
         case listURL = "list_url"
     }
 
@@ -101,8 +107,14 @@ struct HomeworkItem: Decodable, Identifiable, Hashable {
         }
         title = (try? c.decode(String.self, forKey: .title)) ?? ""
         status = (try? c.decode(String.self, forKey: .status)) ?? ""
+        progress = (try? c.decode(Double.self, forKey: .progress)) ?? 0
         url = try? c.decode(String.self, forKey: .url)
         listURL = try? c.decode(String.self, forKey: .listURL)
+    }
+
+    /// 作业内进度百分比（0...100，进度钳制在 0~1）
+    var progressPercent: Int {
+        Int((min(max(progress, 0), 1) * 100).rounded())
     }
 }
 

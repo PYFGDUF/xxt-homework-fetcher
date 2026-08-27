@@ -26,6 +26,7 @@ from core.config import (
     get_force_regrab,
     get_headless,
     get_open_dir_on_complete,
+    get_show_source_url,
     get_reusable_browser,
     get_reusable_context,
     get_reusable_page,
@@ -35,6 +36,7 @@ from core.config import (
     reset_login_cancel,
     is_login_cancelled,
     save_state,
+    set_active_homework,
     set_course_name,
     set_current_browser,
     set_current_context,
@@ -60,6 +62,8 @@ from spider.browser import (
     wait_stable,
 )
 from spider.homework import (
+    LIST_NAV_SETTLE_MS,
+    LIST_TAB_SETTLE_MS,
     click_homework_item,
     collect_all_homeworks,
     enter_homework_tab,
@@ -178,6 +182,13 @@ _QR_SELECTORS = [
 
 # 无头扫码登录总预算（秒）
 _HEADLESS_LOGIN_TIMEOUT = 300
+
+# 单个作业抓取的总超时（秒）：题目翻页阶段超过此上限即提前截断，
+# 避免某个作业因页面异常卡死而拖垮整门课程。extract_all_questions 已支持 deadline。
+SINGLE_HOMEWORK_TIMEOUT_SEC = 300
+
+# 打不开/点击作业失败时的自动重试次数（网络抖动/懒加载偶发失败可自愈）
+OPEN_HOMEWORK_RETRIES = 1
 
 
 class LoginCancelledError(RuntimeError):
@@ -323,11 +334,12 @@ def standalone_login() -> bool:
                     pass
 
 
-def save_homework(title: str, url: str, questions: list) -> str:
+def save_homework(title: str, url: str, questions: list, progress_cb=None) -> str:
     """
     保存为 Word（主输出）和 JSON（元数据，隐藏目录）。
     同一 URL 的作业覆盖旧文件，避免产生 _1/_2 重复文件。
     返回生成的 Word 文件路径（若失败返回空字符串）。
+    progress_cb: 可选 (done, total) 回调，用于图片下载阶段上报进度。
     """
     safe_title = safe_filename(title)
     word_base = os.path.join(output_dir(), safe_title)
@@ -368,8 +380,8 @@ def save_homework(title: str, url: str, questions: list) -> str:
         dq["answer"], _ = download_images_in_text(q.get("answer", ""), images_dir, relative_prefix, registry)
         doc_questions.append(dq)
 
-    # 并发下载所有图片
-    failed_imgs = registry.download_all(max_workers=5, max_retries=2)
+    # 并发下载所有图片（带逐张进度回调）
+    failed_imgs = registry.download_all(max_workers=12, max_retries=2, progress_cb=progress_cb)
     # 有图片下载失败时上报事件，供 GUI 在抓取完成后弹窗提示
     if failed_imgs:
         emit_image_fail(failed_imgs, title)
@@ -388,7 +400,8 @@ def save_homework(title: str, url: str, questions: list) -> str:
     # Word 文档（主输出）
     docx_path = f"{final_word_base}.docx"
     try:
-        save_word(title, url, doc_questions, final_word_base, output_dir(), registry)
+        save_word(title, url, doc_questions, final_word_base, output_dir(), registry,
+                  show_source_url=get_show_source_url())
     except Exception as e:
         print(f"    [error] 生成 Word 失败：{e}")
         return ""
@@ -436,7 +449,7 @@ def load_homework_list(course_url: str = None, headless: bool = None, interactiv
         set_current_browser(browser)
         set_current_context(context)
         page.goto(url, wait_until="domcontentloaded", timeout=WAIT_TIMEOUT)
-        wait_stable(page, 3000)
+        wait_stable(page, LIST_NAV_SETTLE_MS)
 
         # 先处理登录态：CLI 交互模式下允许手动登录；GUI 非交互模式弹出登录对话框等待
         if is_login_page(page):
@@ -460,7 +473,7 @@ def load_homework_list(course_url: str = None, headless: bool = None, interactiv
 
         entered_tab = enter_homework_tab(page)
         if entered_tab:
-            wait_stable(page, 5000)
+            wait_stable(page, LIST_TAB_SETTLE_MS)
 
         list_frame = find_homework_list_frame(page)
         if list_frame != page:
@@ -484,7 +497,8 @@ def load_homework_list(course_url: str = None, headless: bool = None, interactiv
 
         if len(homeworks) > 0 and homeworks[0].get("title") != "manual_capture":
             print(f"\n开始统计全部作业（当前已识别 {len(homeworks)} 个）...")
-            homeworks = collect_all_homeworks(list_frame, on_page=stream_callback)
+            homeworks = collect_all_homeworks(list_frame, on_page=stream_callback,
+                                              initial_homeworks=homeworks)
 
         # 记录每个作业的 list_url，便于后续抓取时回到正确列表页
         for hw in homeworks:
@@ -537,6 +551,10 @@ def run(selected_homeworks: list = None, interactive: bool = True):
             # 课程名与登录态在 load_homeworks 时已记录/保存，这里复用即可
             ensure_dirs()
             print(f"\n===== GUI 选定 {total_count} 个作业待抓取 =====")
+            # GUI 选定模式同样校验登录态，避免直接抓取时中途掉登录
+            if is_login_page(page):
+                if not _gui_login_flow(page, context, interactive):
+                    raise LoginCancelledError
             print(f"本次运行输出目录：{output_dir()}\n")
             list_frame = None
         else:
@@ -633,6 +651,10 @@ def run(selected_homeworks: list = None, interactive: bool = True):
                 break
 
             print(f"[{idx}/{total_count}] 正在抓取：{hw['title']}")
+            # 记录当前作业上下文，供单作业进度实时映射为总进度（与 progress 事件联动）
+            set_active_homework(idx, total_count)
+            # 单作业进度：开始处理时上报 in_progress 并清零（GUI 行级从 0% 起）
+            _report_status(hw.get("url", ""), hw["title"], "in_progress", progress=0.0)
 
             new_page = None
             save_url = ""
@@ -655,37 +677,80 @@ def run(selected_homeworks: list = None, interactive: bool = True):
                     print(f"    [warn] 过滤掉智能分析链接：{target_url}")
                     target_url = ""
 
-                if target_url:
-                    # 直接打开真实作业 URL（选定模式下作业自带直达 URL，可在任意课程上下文下抓取）
-                    print(f"    新标签页打开：{target_url}")
-                    new_page = context.new_page()
-                    new_page.goto(target_url, wait_until="domcontentloaded", timeout=WAIT_TIMEOUT)
-                    wait_stable(new_page, 4000)
-                    save_url = target_url
-                else:
-                    # 点击标题进入作业，并捕获新打开的标签页
-                    # 选定模式无课程级列表帧时，用作业自身 list_url 临时打开一个列表上下文
+                # —— 打开作业（含自动重试 + 登录失效检测）——
+                # 单次「打开」尝试：直连 URL 或点击进入；成功则返回 (page, url)，失败返回 (None, "")
+                def _try_open(attempt: int):
+                    if target_url:
+                        print(f"    新标签页打开：{target_url}（第 {attempt}/{OPEN_HOMEWORK_RETRIES + 1} 次）")
+                        np = context.new_page()
+                        try:
+                            np.goto(target_url, wait_until="domcontentloaded", timeout=WAIT_TIMEOUT)
+                            wait_stable(np, 4000)
+                        except Exception as e:
+                            print(f"    [warn] 打开失败：{e}")
+                            try:
+                                np.close()
+                            except Exception:
+                                pass
+                            return None, ""
+                        return np, target_url
+                    # 点击进入
                     entry = list_frame if list_frame is not None else _open_item_list(context, page, hw)
                     if entry is None:
-                        print("    无法定位作业列表上下文，跳过")
-                        tracker.set(hw.get("url", ""), hw["title"], "failed")
-                        _report_status(hw.get("url", ""), hw["title"], "failed")
-                        _report_progress(idx, total_count, hw["title"])
-                        continue
-                    print("    点击标题进入作业...")
-                    new_page = click_homework_item(context, entry, hw["title"])
-                    if not new_page:
-                        print("    点击失败，跳过")
-                        tracker.set(hw.get("url", ""), hw["title"], "failed")
-                        _report_status(hw.get("url", ""), hw["title"], "failed")
-                        _report_progress(idx, total_count, hw["title"])
-                        continue
-                    save_url = new_page.url
+                        return None, ""
+                    np = click_homework_item(context, entry, hw["title"])
+                    if not np:
+                        return None, ""
+                    return np, np.url
 
-                questions = extract_all_questions(new_page)
+                new_page = None
+                save_url = ""
+                for attempt in range(1, OPEN_HOMEWORK_RETRIES + 2):
+                    new_page, save_url = _try_open(attempt)
+                    if new_page:
+                        break
+                    print(f"    [warn] 打开作业失败（第 {attempt} 次）")
+                    # 到达最后一次仍失败则标记作业失败
+                    if attempt > OPEN_HOMEWORK_RETRIES:
+                        break
+                    time.sleep(1.0)
+
+                if not new_page:
+                    print("    无法打开作业，跳过")
+                    tracker.set(hw.get("url", ""), hw["title"], "failed")
+                    _report_status(hw.get("url", ""), hw["title"], "failed")
+                    _report_progress(idx, total_count, hw["title"])
+                    continue
+
+                # 登录失效检测：作业页若被重定向回登录页，说明登录态已过期
+                if is_login_page(new_page):
+                    print("\n[error] 检测到登录态已失效（作业页被重定向到登录页），停止抓取。")
+                    print("[info] 请到设置中重新「登录学习通」，再继续抓取。")
+                    debug_screenshot(new_page, "login_expired")
+                    tracker.set(hw.get("url", ""), hw["title"], "failed")
+                    _report_status(hw.get("url", ""), hw["title"], "failed")
+                    _report_progress(idx, total_count, hw["title"])
+                    # 打断后续作业（整门课都会因掉登录而抓不到），进入合并收尾
+                    break
+
+                # 单作业超时：取当前时刻 + 预算，交给题目翻页阶段提前截断
+                hw_deadline = time.time() + SINGLE_HOMEWORK_TIMEOUT_SEC
+                questions = extract_all_questions(new_page, title=hw.get("title", ""), url=hw.get("url", ""),
+                                                  deadline=hw_deadline)
 
                 if questions:
-                    docx_path = save_homework(hw["title"], save_url, questions)
+                    # 题目抓取完成、进入保存阶段：基准进度置 0.95，图片下载再逐张推进到 ~0.999（completed 时在 GUI 置满）
+                    hw_url = hw.get("url", "")
+                    _report_status(hw_url, hw["title"], "in_progress", progress=0.95)
+                    docx_path = save_homework(
+                        hw["title"],
+                        save_url,
+                        questions,
+                        progress_cb=lambda done, total: _report_status(
+                            hw_url, hw["title"], "in_progress",
+                            progress=min(0.999, 0.95 + 0.049 * (done / max(total, 1))),
+                        ),
+                    )
                     if docx_path:
                         tracker.set(hw.get("url", ""), hw["title"], "completed",
                                     output_dir=output_dir(), word_file=docx_path)

@@ -50,8 +50,38 @@ _LOGIN_PROMPT_CALLBACK = None
 # GUI 扫码二维码图片回传回调：func(image_b64: str, message: str)
 _LOGIN_QR_CALLBACK = None
 
-# GUI 作业状态回调：func(url: str, title: str, status: str)
+# GUI 作业状态回调：func(url: str, title: str, status: str, progress: float | None = None)
+# progress 为该作业内部进度（0~1，None 表示无作业内进度信息）
 _STATUS_CALLBACK = None
+
+# 当前正在抓取的作业上下文（用于把单作业进度映射成总进度，供 GUI 总进度条实时联动）
+_ACTIVE_HW_IDX = 0        # 当前作业在本次抓取序列中的序号（从 1 起）
+_ACTIVE_HW_TOTAL = 0      # 本次待抓作业总数
+
+
+def set_active_homework(idx: int, total: int):
+    """记录本次抓取序列中当前正在处理的作业位置（供总进度联动计算）。id 从 1 起。"""
+    global _ACTIVE_HW_IDX, _ACTIVE_HW_TOTAL
+    _ACTIVE_HW_IDX = max(1, int(idx))
+    _ACTIVE_HW_TOTAL = max(0, int(total))
+
+
+def reset_active_homework():
+    """清除当前作业上下文（抓取结束/新会话时调用）。"""
+    global _ACTIVE_HW_IDX, _ACTIVE_HW_TOTAL
+    _ACTIVE_HW_IDX = 0
+    _ACTIVE_HW_TOTAL = 0
+
+
+def _overall_progress(progress: float | None) -> float | None:
+    """把当前作业的内部进度映射成 0..1 总进度：（已完成作业数 + 当前作业进度）/ 总数。
+
+    仅在单作业进度有效且存在作业上下文时返回；否则返回 None（由 progress 事件单独驱动）。
+    """
+    if progress is None or _ACTIVE_HW_TOTAL <= 0:
+        return None
+    done = max(0, _ACTIVE_HW_IDX - 1)
+    return min(1.0, (done + max(0.0, min(1.0, progress))) / _ACTIVE_HW_TOTAL)
 
 # 登录完成事件：后台线程 wait，GUI 点击按钮后 set
 _LOGIN_EVENT = threading.Event()
@@ -104,6 +134,9 @@ FORCE_REGRAB = False
 
 # 抓取全部完成后，是否自动在 Finder 中打开本次输出目录
 OPEN_DIR_ON_COMPLETE = True
+
+# 是否在生成的 Word 文档中展示「来源：URL」行
+SHOW_SOURCE_URL = True
 
 # 进度记录文件
 PROGRESS_FILE = "progress.json"
@@ -200,6 +233,19 @@ def set_open_dir_on_complete(value: bool):
     OPEN_DIR_ON_COMPLETE = bool(value)
     settings = load_settings()
     settings["open_dir_on_complete"] = OPEN_DIR_ON_COMPLETE
+    save_settings(settings)
+
+
+def get_show_source_url() -> bool:
+    return SHOW_SOURCE_URL
+
+
+def set_show_source_url(value: bool):
+    """设置是否在 Word 文档中展示「来源：URL」，并保存到 settings.json。"""
+    global SHOW_SOURCE_URL
+    SHOW_SOURCE_URL = bool(value)
+    settings = load_settings()
+    settings["show_source_url"] = SHOW_SOURCE_URL
     save_settings(settings)
 
 
@@ -303,23 +349,26 @@ def _report_progress(current: int, total: int, title: str):
     if _PROGRESS_CALLBACK:
         try:
             _PROGRESS_CALLBACK(current, total, title)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[debug] 进度回调异常：{e}")
 
 
 def set_status_callback(callback):
-    """设置作业状态回调，签名：callback(url: str, title: str, status: str)。"""
+    """设置作业状态回调，签名：callback(url: str, title: str, status: str, progress: float | None = None, overall: float | None = None)。"""
     global _STATUS_CALLBACK
     _STATUS_CALLBACK = callback
 
 
-def _report_status(url: str, title: str, status: str):
-    """内部作业状态上报（completed / failed / skipped 等）。"""
+def _report_status(url: str, title: str, status: str, progress: float | None = None):
+    """内部作业状态上报（completed / failed / in_progress 等）。
+    progress 为该作业内部进度（0~1），用于 GUI 展示单个作业的百分比进度。
+    同时附带 overall（0..1 总进度）供 GUI 的总进度条与单作业进度实时联动。"""
+    overall = _overall_progress(progress) if status == "in_progress" else None
     if _STATUS_CALLBACK:
         try:
-            _STATUS_CALLBACK(url, title, status)
-        except Exception:
-            pass
+            _STATUS_CALLBACK(url, title, status, progress, overall)
+        except Exception as e:
+            print(f"[debug] 状态回调异常：{e}")
 
 
 # 图片下载失败事件回调：func(failed: int, title: str)
@@ -445,7 +494,7 @@ def set_appearance(mode: str):
 
 def apply_settings(settings: dict = None):
     """应用配置到全局变量。"""
-    global BASE_OUTPUT_DIR, BASE_DEBUG_DIR, COURSE_URL, HEADLESS, AUTO_EXPORT_PDF, FORCE_REGRAB, OPEN_DIR_ON_COMPLETE
+    global BASE_OUTPUT_DIR, BASE_DEBUG_DIR, COURSE_URL, HEADLESS, AUTO_EXPORT_PDF, FORCE_REGRAB, OPEN_DIR_ON_COMPLETE, SHOW_SOURCE_URL
     if settings is None:
         settings = load_settings()
     # 用户选择的就是输出根目录，时间戳子目录由 run() 创建；debug 放在其下的 debug/ 中
@@ -462,6 +511,8 @@ def apply_settings(settings: dict = None):
         FORCE_REGRAB = bool(settings["force_regrab"])
     if "open_dir_on_complete" in settings:
         OPEN_DIR_ON_COMPLETE = bool(settings["open_dir_on_complete"])
+    if "show_source_url" in settings:
+        SHOW_SOURCE_URL = bool(settings["show_source_url"])
 
 
 # 启动时自动加载配置

@@ -20,8 +20,8 @@ def merge_all_docx(output_directory: str, merged_name: str = "全部作业合并
     try:
         from docxcompose.composer import Composer
         from docx import Document
-    except ImportError:
-        print("[warn] 未安装 docxcompose，无法自动合并文档。请运行：pip install docxcompose")
+    except Exception as e:
+        print(f"[warn] 加载合并组件失败（docxcompose），本次跳过自动合并：{e}")
         return ""
 
     try:

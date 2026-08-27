@@ -66,30 +66,48 @@ iso_code = r"""
 import json, sys, os
 sys.path.insert(0, os.path.abspath("."))
 from core import config
-captured = []
-def cb(url, title, status):
-    captured.append((url, title, status))
+transient = []
+def cb(url, title, status, progress=None, overall=None):
+    transient.append((url, title, status, progress, overall))
 config.set_status_callback(cb)
-config._report_status("https://example.com/hw?id=42", "作业标题 测试", "completed")
+# 设置作业上下文，验证 in_progress 会附带总进度 overall，completed 不附带
+config.set_active_homework(2, 4)
+config._report_status("https://example.com/hw?id=42", "作业标题 测试", "in_progress", 0.5)
+config._report_status("https://example.com/hw?id=43", "作业标题 完成", "completed", 1.0)
 def emit(x): print("EVENT:" + json.dumps(x, ensure_ascii=False))
-def status_cb(url, title, status):
-    emit({"kind": "status", "value": {"url": url, "title": title, "status": status}})
-status_cb(captured[0][0], captured[0][1], captured[0][2])
-print("CB:" + json.dumps(list(captured[0]), ensure_ascii=False))
+def status_cb(url, title, status, progress=None, overall=None):
+    emit({"kind": "status", "value": {"url": url, "title": title, "status": status,
+          "progress": progress, "overall": overall}})
+status_cb(*transient[0])
+print("CB0:" + json.dumps(list(transient[0]), ensure_ascii=False))
+print("CB1:" + json.dumps(list(transient[1]), ensure_ascii=False))
 """
 out = naive_check(iso_code)
 evt = None
-cb = None
+cb0 = None
+cb1 = None
 for ln in out.splitlines():
     if ln.startswith("EVENT:"):
         evt = json.loads(ln[len("EVENT:"):])
-    elif ln.startswith("CB:"):
-        cb = json.loads(ln[len("CB:"):])
-assert cb, f"状态回调未被触发: {out}"
-assert cb == ["https://example.com/hw?id=42", "作业标题 测试", "completed"], cb
+    elif ln.startswith("CB0:"):
+        cb0 = json.loads(ln[len("CB0:"):])
+    elif ln.startswith("CB1:"):
+        cb1 = json.loads(ln[len("CB1:"):])
+assert cb0, f"状态回调未被触发: {out}"
+assert cb1, f"completed 回调未被触发: {out}"
+# in_progress：url/title 有效，progress=0.5，且附带总进度 overall（(2-1+0.5)/4=0.375）
+u0, t0, s0, p0, o0 = cb0
+assert (u0, s0) == ("https://example.com/hw?id=42", "in_progress"), cb0
+assert abs(p0 - 0.5) < 0.001, f"progress 异常: {cb0}"
+assert o0 is not None and abs(o0 - 0.375) < 0.001, f"整体进度 overall 异常: {cb0}"
+# completed：不附带总体进度（命中回退计数）
+u1, t1, s1, p1, o1 = cb1
+assert s1 == "completed" and o1 is None, f"completed 不应附带 overall: {cb1}"
 assert evt and evt["kind"] == "status", f"事件缺 kind=status: {evt}"
 v = evt["value"]
 assert {"url", "title", "status"} <= set(v.keys()), f"status 事件缺字段: {v}"
-print(f"  状态回调 OK: {cb}")
+assert v["overall"] is not None, f"in_progress 事件缺 overall: {v}"
+print(f"  in_progress 回调 OK: url/title/status/progress/overall -> {cb0}")
+print(f"  completed 回调 OK: overall 为空 -> {(u1, s1)}")
 print(f"  status 事件 OK: {json.dumps(v, ensure_ascii=False)}")
-print("\n全部通过：bridge 往返正常，status 事件含 url/title/status 并可被 Swift 解码。")
+print("\n全部通过：bridge 往返正常，status 事件含 url/title/status(+overall) 并可被 Swift 解码。")

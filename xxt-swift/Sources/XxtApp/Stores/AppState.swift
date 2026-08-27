@@ -52,11 +52,20 @@ final class AppState {
     // 抓取进度（来自引擎 progress 事件，作业级累计 1..total）
     var progressCurrent = 0
     var progressTotal = 0
+    // 总进度联动值：由引擎的单作业 in_progress 进度实时映射（0~1）。
+    // 存在时总进度条优先用它平滑前进，而非仅按作业跳格。
+    var overallProgress: Double?
+    // 总进度「显示层」值（0~1）：与目标 progressTarget 分离，由 60fps 插值器平滑逼近，
+    // 避免引擎频繁上报导致 ProgressBar 的 animation 每次被中断、观感生硬。
+    var displayProgress: Double = 0
     // 本次抓取的成功 / 失败作业计数，用于「结果卡」展示
     var runOkCount = 0
     var runFailCount = 0
     // 本次抓取图片下载失败计数，用于结果卡「图片下载失败 k 张」
     var runImageFailCount = 0
+    // 本次抓取起止时刻，结果卡展示抓取耗时
+    var runStartDate: Date?
+    var runEndDate: Date?
     // 最近一次抓取是否已结束（用于在任务流主视图切换「结果卡」）
     var lastRunFinished = false
     // 本次会话是否真正发起了抓取（用于区分「done 来自 load_homeworks」还是来自 start）
@@ -92,15 +101,75 @@ final class AppState {
         }
     }
 
-    /// 抓取进度分数（0...1），供进度条使用
-    var progressFraction: Double {
+    /// 将外观偏好一次性应用到全局窗口，避免用 `.preferredColorScheme` 修饰符逐渲染 re-apply。
+    /// macOS 26(Liquid Glass) 下，`.preferredColorScheme` 会把外观反复套用到宿主视图，导致主界面
+    /// 全部元素持续重绘闪烁；改为在「外观变化时」设一次 `NSApp.appearance` 即可稳定切换且不闪烁。
+    func applyAppearance() {
+        let appearance: NSAppearance?
+        switch preferredColorScheme {
+        case .light: appearance = NSAppearance(named: .aqua)
+        case .dark:  appearance = NSAppearance(named: .darkAqua)
+        default:     appearance = nil // 跟随系统
+        }
+        NSApplication.shared.appearance = appearance
+    }
+
+    /// 总进度「目标值」（0...1）：由引擎整体联动值覆盖，否则回退为作业级计数。
+    private var progressTarget: Double {
+        if let o = overallProgress {
+            return min(max(o, 0), 1)
+        }
         guard progressTotal > 0 else { return 0 }
         return Double(min(progressCurrent, progressTotal)) / Double(progressTotal)
+    }
+
+    /// 抓取进度分数（0...1），供进度条使用。
+    /// 返回「显示层」displayProgress——由插值器以限速渐出逼近目标值，
+    /// 因此总进度条在单作业进度变化时也会平滑、连贯地前进，而非瞬时跳变。
+    var progressFraction: Double {
+        min(max(displayProgress, 0), 1)
     }
 
     /// 抓取进度百分比（0...100）
     var progressPercent: Int {
         Int((progressFraction * 100).rounded())
+    }
+
+    // ---------- 总进度平滑插值器 ----------
+    // CadenceLink 无法在 @Observable 直接持有，用 Timer 即可满足 60fps 展示需求。
+    private var progressTicker: Timer?
+
+    /// 启动 60fps 定时器，每帧把 displayProgress 向 progressTarget 平滑逼近一次。
+    private func startProgressInterpolator() {
+        guard progressTicker == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.tickProgressInterpolator()
+        }
+        // 加入主运行循环通用模式，避免拖动/滚动时暂停导致的进度顿挫
+        RunLoop.main.add(timer, forMode: .common)
+        progressTicker = timer
+    }
+
+    /// 单次插值帧：渐出逼近——差距越大推进越快，越接近目标越平稳，且设置速率上限防跳变。
+    private func tickProgressInterpolator() {
+        let target = progressTarget
+        var current = displayProgress
+        if current >= target {
+            // 到达或超过目标：直接锁定，避免抖动与反向
+            current = target
+        } else {
+            // 指数渐出：差值按 ~12% 收敛，配合速率上限，视觉上平滑匀速地爬到目标
+            let step = (target - current) * 0.12
+            let maxStep = 0.02   // 单帧最多推进 2%，约 1.2%/帧 * 60 = 平滑且不跳跃
+            current = current + min(step, maxStep)
+            // 极接近目标时直接收敛到位，避免数值上永远差一丝
+            if target - current < 0.0005 {
+                current = target
+            }
+        }
+        if abs(current - displayProgress) > 0.000001 {
+            displayProgress = current
+        }
     }
 
     /// 播放提示音的持久化 setter（随 didSet 写 UserDefaults）
@@ -128,6 +197,8 @@ final class AppState {
             self.isRunning = false
             self.appendLog("引擎已退出", level: "error")
         }
+        // 启动 60fps 插值器：让 displayProgress 持续向 progressTarget 平滑逼近
+        startProgressInterpolator()
     }
 
     // MARK: - 生命周期
@@ -163,6 +234,8 @@ final class AppState {
                 progressCurrent = current
                 progressTotal = total
                 courseName = event.value.title ?? ""
+                // 作业完成计格时，回退为按作业计数（让下一个 in_progress 再接管平滑联动）
+                overallProgress = nil
             }
         case .loginPrompt:
             isLoggingIn = true
@@ -220,10 +293,13 @@ final class AppState {
             if fetchStarted {
                 lastRunFinished = true
                 fetchStarted = false
+                runEndDate = Date()
             }
             // 进度归零，避免进度条停留在最后一个位置
             progressCurrent = 0
             progressTotal = 0
+            overallProgress = nil
+            displayProgress = 0
             appendLog(msg, level: success ? "success" : "error")
             if success {
                 completionReminder()
@@ -270,6 +346,17 @@ final class AppState {
             (url != nil && hw.url == url) || (url == nil && !title.isEmpty && hw.title == title)
         }) {
             homeworks[idx].status = status
+            // 单作业进度：completed 置满，其余用引擎上报的 0~1 进度（未上报保持原值）
+            if status == "completed" {
+                homeworks[idx].progress = 1.0
+            } else if let p = value.progress {
+                homeworks[idx].progress = p
+            }
+        }
+
+        // 总进度联动：in_progress 且引擎附带了整体进度时，平滑驱动总进度条
+        if status == "in_progress", let overall = value.overall {
+            overallProgress = min(max(overall, 0), 1)
         }
 
         let level = status == "completed" ? "success" : (status == "failed" ? "error" : "info")
@@ -334,6 +421,8 @@ final class AppState {
         runOkCount = 0
         runFailCount = 0
         runImageFailCount = 0
+        overallProgress = nil
+        displayProgress = 0
         isEngineBusy = true
         homeworks.removeAll()
         appendLog("正在加载作业列表…", level: "info")
@@ -351,11 +440,13 @@ final class AppState {
             appendLog("请先勾选要抓取的作业", level: "warn")
             return
         }
-        // 新一轮抓取：清零上轮结果计数并复位结束标记
+        // 新一轮抓取：清零上轮结果计数并复位结束标记，记录起始时刻以统计耗时
         runOkCount = 0
         runFailCount = 0
         runImageFailCount = 0
         lastRunFinished = false
+        runStartDate = Date()
+        runEndDate = nil
         fetchStarted = true
         isEngineBusy = true
         isRunning = true
@@ -366,6 +457,16 @@ final class AppState {
     func stopTask() {
         engine.send("stop")
         appendLog("请求停止…", level: "warn")
+    }
+
+    /// 本次抓取耗时（结果卡展示）；未完成或异常时返回空
+    var runDurationText: String {
+        guard let s = runStartDate, let e = runEndDate else { return "" }
+        let d = max(0, e.timeIntervalSince(s))
+        if d < 60 {
+            return String(format: "%.1f 秒", d)
+        }
+        return "\(Int(d) / 60) 分 \(Int(d) % 60) 秒"
     }
 
     /// 返回作业选择页面（继续抓取）：仅隐藏结果卡，保留已加载的作业与勾选。
@@ -382,6 +483,8 @@ final class AppState {
         runOkCount = 0
         runFailCount = 0
         runImageFailCount = 0
+        runStartDate = nil
+        runEndDate = nil
     }
 
     func loginDone() {

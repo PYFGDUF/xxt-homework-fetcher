@@ -10,6 +10,10 @@ import time
 
 from core.config import PROGRESS_FILE, get_force_regrab
 
+# 运行时数据根目录：优先当前工作目录（Swift 引擎以 ~/Library/Application Support/XxtApp/ 为 cwd），
+# 避免 PyInstaller 冻结态把 progress.json 写进 Bundle 的 _internal/（会破坏代码签名封印）。
+_RUNTIME_ROOT = os.getcwd()
+
 
 # 进度文件最多保留的记录数，防止无限增长
 MAX_PROGRESS_RECORDS = 500
@@ -21,7 +25,7 @@ class ProgressTracker:
     """记录每个作业的抓取状态，支持断点续传与自动清理。"""
 
     def __init__(self, path: str = None):
-        self.path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", PROGRESS_FILE)
+        self.path = path or os.path.join(_RUNTIME_ROOT, PROGRESS_FILE)
         self.data = self._load()
         self._migrate()
         self._clean()

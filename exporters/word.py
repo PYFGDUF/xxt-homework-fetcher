@@ -53,8 +53,10 @@ class ImageRegistry:
     def items(self):
         return self._refs.items()
 
-    def download_all(self, max_workers: int = 5, max_retries: int = 2) -> int:
-        """并发下载注册表中所有图片，更新下载状态，并返回失败图片数量。"""
+    def download_all(self, max_workers: int = 12, max_retries: int = 2,
+                     progress_cb=None) -> int:
+        """并发下载注册表中所有图片，更新下载状态，并返回失败图片数量。
+        progress_cb: 可选 (done, total) 回调，每完成一张图片上报一次下载进度。"""
         def _download_one(ref):
             key, info = ref
             success = download_image(info["url"], info["local_path"], max_retries=max_retries)
@@ -78,6 +80,11 @@ class ImageRegistry:
                     failed += 1
                     info = self._refs.get(key, {})
                     print(f"      [warn] 图片下载失败：{info.get('url', '')}")
+                if progress_cb:
+                    try:
+                        progress_cb(completed, total)
+                    except Exception:
+                        pass
         print(f"    图片下载完成：成功 {completed} 张，失败 {failed} 张")
         return failed
 
@@ -271,7 +278,7 @@ def add_markdown_paragraph(doc: Document, text: str, images_base_dir: str,
 
 
 def save_word(title: str, url: str, questions: list, base: str, images_base_dir: str,
-              registry: ImageRegistry = None):
+              registry: ImageRegistry = None, show_source_url: bool = True):
     """生成排版精美的 Word 文档，包含题目、选项、答案及内嵌图片。"""
     doc = Document()
     font_name = _get_system_chinese_font()
@@ -291,13 +298,14 @@ def save_word(title: str, url: str, questions: list, base: str, images_base_dir:
     heading.alignment = 0
     heading.paragraph_format.space_after = Pt(10)
 
-    # 来源
-    p = doc.add_paragraph()
-    run = p.add_run("来源：")
-    _set_run_font(run, font_size=9, color="666666")
-    run = p.add_run(_safe_run_text(url))
-    _set_run_font(run, font_size=9, color="666666")
-    p.paragraph_format.space_after = Pt(2)
+    # 来源（可通过设置开关控制是否展示）
+    if show_source_url:
+        p = doc.add_paragraph()
+        run = p.add_run("来源：")
+        _set_run_font(run, font_size=9, color="666666")
+        run = p.add_run(_safe_run_text(url))
+        _set_run_font(run, font_size=9, color="666666")
+        p.paragraph_format.space_after = Pt(2)
 
     # 总题数
     p = doc.add_paragraph()

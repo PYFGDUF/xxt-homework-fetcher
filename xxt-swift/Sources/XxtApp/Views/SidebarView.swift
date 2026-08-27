@@ -46,7 +46,7 @@ struct SidebarView: View {
                 TextField("课程 URL", text: Bindable(app).settings.courseURL, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(2...3)
-                    .font(.caption)
+                    .font(.body)
                     .submitLabel(.go)
                     .onSubmit {
                         if !app.isEngineBusy {
@@ -70,7 +70,7 @@ struct SidebarView: View {
             if !app.homeworks.isEmpty {
                 HStack(spacing: 10) {
                     Text("\(filteredHomeworks.count) 个作业")
-                        .font(.caption)
+                        .font(.callout.weight(.medium))
                         .foregroundStyle(.secondary)
                         .textSelection(.disabled)
                     Spacer()

@@ -6,6 +6,8 @@ import AppKit
 struct LoginPromptView: View {
     @Environment(AppState.self) private var app
     private let qrSlot: CGFloat = 230
+    /// 钥匙图标的呼吸缩放进度
+    @State private var keyBreath = false
 
     var body: some View {
         VStack(spacing: 16) {
@@ -43,6 +45,13 @@ struct LoginPromptView: View {
             Image(systemName: "person.badge.key.fill")
                 .font(.system(size: 30, weight: .medium))
                 .foregroundStyle(app.theme.primary)
+                .scaleEffect(keyBreath ? 1.08 : 1)
+                .shadow(color: app.theme.primary.opacity(keyBreath ? 0.4 : 0), radius: keyBreath ? 8 : 0)
+                .onAppear {
+                    withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                        keyBreath = true
+                    }
+                }
         }
     }
 

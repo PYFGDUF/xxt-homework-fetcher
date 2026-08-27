@@ -58,13 +58,48 @@ def debug_screenshot(page_or_frame, name: str):
         print(f"    [debug] 截图失败：{e}")
 
 
-def wait_stable(page_or_frame, timeout_ms: int = 5000):
-    """等待页面网络/渲染基本稳定。"""
+def wait_stable(page_or_frame, timeout_ms: int = 5000, on_progress=None):
+    """等待页面网络/渲染基本稳定。
+
+    提速优化：与旧版「等 networkidle 后固定 sleep timeout_ms」不同，这里在等出 networkidle
+    之后，轮询页面文本，连续多次采样内容不变（渲染已收敛）即提前返回，最多等待 timeout_ms。
+    页面早已稳定时无需再付那一段固定等待，从而显著减少抓取耗时。
+
+    on_progress：可选回调，接收 0..1 表示本次等待的完成度，用于在等待期间把进度平滑
+    推进（消除"打开作业时进度停在 0%"的空窗）。仅在调用方显式传入时生效。
+    """
+    start = time.time()
+    if on_progress is not None:
+        on_progress(0.0)
     try:
         page_or_frame.wait_for_load_state("networkidle", timeout=WAIT_TIMEOUT)
-    except Exception:
-        pass
-    time.sleep(timeout_ms / 1000)
+    except Exception as e:
+        print(f"    [debug] networkidle 未在 {WAIT_TIMEOUT}ms 内达成（忽略，继续轮询稳定）：{e}")
+
+    # 轮询直至页面内容收敛：连续 SAME_TEXT_STREAK 次采样到的正文长度一致即认为稳定。
+    SAME_TEXT_STREAK = 2
+    INTERVAL = 0.15
+    span = max(0.001, timeout_ms / 1000.0)
+    last_len = None
+    streak = 0
+    while time.time() - start < span:
+        try:
+            text = page_or_frame.locator("body").inner_text(timeout=1000)
+            length = len(text.strip())
+        except Exception:
+            text, length = "", 0
+        if length == last_len:
+            streak += 1
+            if streak >= SAME_TEXT_STREAK:
+                break
+        else:
+            streak = 0
+        last_len = length
+        time.sleep(INTERVAL)
+        if on_progress is not None:
+            on_progress(min(1.0, (time.time() - start) / span))
+    if on_progress is not None:
+        on_progress(1.0)
 
 
 def click_when_ready(page, locator, timeout: int = ACTION_TIMEOUT):
@@ -96,8 +131,8 @@ def wait_for_iframe_content(page_or_frame, timeout_ms: int = 10_000):
             # 有文字内容且不是纯空白，认为加载完成
             if len(text.strip()) > 50:
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    [debug] wait_for_iframe_content 读取 body 失败（重试中）：{e}")
         time.sleep(0.5)
 
 
