@@ -17,6 +17,8 @@ from spider.homework import (
     extract_homework_items,
     click_homework_item,
     find_homework_list_frame,
+    find_course_list_frame,
+    extract_course_list,
     collect_all_homeworks,
 )
 from spider.questions import (
@@ -31,7 +33,7 @@ from spider.questions import (
     get_question_frame,
     extract_all_questions,
 )
-from spider.runner import load_homework_list, run, save_homework, standalone_login
+from spider.runner import load_homework_list, run, save_homework, standalone_login, list_courses
 
 __all__ = [
     # browser
@@ -50,6 +52,8 @@ __all__ = [
     "extract_homework_items",
     "click_homework_item",
     "find_homework_list_frame",
+    "find_course_list_frame",
+    "extract_course_list",
     "collect_all_homeworks",
     # questions
     "find_question_frame",
@@ -67,4 +71,5 @@ __all__ = [
     "run",
     "save_homework",
     "standalone_login",
+    "list_courses",
 ]

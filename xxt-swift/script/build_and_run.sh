@@ -7,6 +7,10 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="XxtApp"
 DIST_DIR="$PROJECT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
+# 版本号（版本信息单一来源）：变更会写进 Info.plist，并纳入指纹触发重新组装
+MARKETING_VERSION="2.2"
+APP_TITLE="学习通作业爬取工具"
+BUNDLE_INFO="学习通作业爬取工具 v2.2 beta"
 # 全局可覆盖：调用方显式指定 DEVELOPER_DIR 时优先采用，否则自动探测。
 # 自动探测规则：优先选择带 SwiftUIMacros 插件的“完整 Xcode”工具链
 # （CommandLineTools 缺少该插件，编译 @State/@Observable 宏直接失败）；
@@ -91,8 +95,9 @@ if [ -x "$ENGINE_SRC_ROOT/engine_xxt" ]; then
     done
     ENGINE_FP="${ENGINE_MARKER}${MS_MARKER}"
 fi
-# 二进制 + 图标 + 引擎/浏览器 合并指纹；任一发生变化都会触发重新组装/重签
-NEW_FP="${BIN_FP}${ICON_FP}${ENGINE_FP}"
+# 二进制 + 图标 + 引擎/浏览器 + 版本信息 合并指纹；任一发生变化都会触发重新组装/重签
+VERSION_FP="$(printf '%s|%s|%s' "$MARKETING_VERSION" "$APP_TITLE" "$BUNDLE_INFO" | shasum -a 256 | awk '{print $1}')"
+NEW_FP="${BIN_FP}${ICON_FP}${ENGINE_FP}${VERSION_FP}"
 
 SKIP_ASSEMBLE=0
 if [ -x "$APP_BUNDLE/Contents/MacOS/$APP_NAME" ] \
@@ -162,9 +167,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>学习通作业爬取工具</string>
+    <string>$APP_TITLE</string>
     <key>CFBundleDisplayName</key>
-    <string>学习通作业爬取工具</string>
+    <string>$APP_TITLE</string>
     <key>CFBundleIdentifier</key>
     <string>com.local.xxt.app</string>
     <!-- 若某次强杀后 launchd 拒绝重生（RBS error 162），可临时改为新 id 绕过 -->
@@ -187,11 +192,11 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
         <string>en</string>
     </array>
     <key>CFBundleShortVersionString</key>
-    <string>2.1.1</string>
+    <string>$MARKETING_VERSION</string>
         <key>CFBundleVersion</key>
-        <string>2.1.1</string>
+        <string>$MARKETING_VERSION</string>
         <key>CFBundleGetInfoString</key>
-        <string>学习通作业爬取工具 v2.1.1 beta</string>
+        <string>$BUNDLE_INFO</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSPrincipalClass</key>

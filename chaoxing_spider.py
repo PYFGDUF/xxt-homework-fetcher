@@ -145,6 +145,7 @@ from spider import (
     run,
     save_homework,
     standalone_login,
+    list_courses,
 )
 from spider.browser import (
     load_cookies,
@@ -155,7 +156,7 @@ from spider.browser import (
     wait_for_iframe_content,
     scroll_frame_to_bottom,
 )
-from spider.homework import is_insight_link
+from spider.homework import find_course_list_frame, extract_course_list, is_insight_link
 
 __all__ = [
     # config
@@ -284,6 +285,9 @@ __all__ = [
     "run",
     "save_homework",
     "standalone_login",
+    "list_courses",
+    "find_course_list_frame",
+    "extract_course_list",
 ]
 
 if __name__ == "__main__":

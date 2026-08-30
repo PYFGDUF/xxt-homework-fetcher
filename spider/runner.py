@@ -11,6 +11,13 @@ import traceback
 
 from playwright.sync_api import sync_playwright
 
+from core.active_queue import (
+    active_get_homework,
+    active_queue_length,
+    clear_active_queue,
+    mark_active_done,
+    register_active_homeworks,
+)
 from core.config import (
     STATE_FILE,
     WAIT_TIMEOUT,
@@ -67,7 +74,9 @@ from spider.homework import (
     click_homework_item,
     collect_all_homeworks,
     enter_homework_tab,
+    extract_course_list,
     extract_homework_items,
+    find_course_list_frame,
     find_homework_list_frame,
     is_insight_link,
 )
@@ -334,6 +343,68 @@ def standalone_login() -> bool:
                     pass
 
 
+@with_logging
+def list_courses(interactive: bool = True) -> list:
+    """列取当前登录账号在个人空间 i.chaoxing.com/base 的课程列表。
+
+    这是「选课程」流程的第一步：扫码登录后，从个人空间课程列表 iframe
+    （visit/interaction）中解析用户的所有课程入口。
+
+    返回每个课程的字典列表：
+      {"title", "teacher", "url", "courseid", "clazzid", "cpi"}
+    其中 url 为 stucoursemiddle 课程入口链接，登录会话内可直接加载并复用
+    load_homework_list。若尚未登录则先走无头扫码登录。
+    interactive: 是否允许通过终端 input() 等待用户操作；GUI 调用时应设为 False。
+    """
+    url = "https://i.chaoxing.com/base"
+    browser = context = playwright_obj = None
+    try:
+        playwright_obj = sync_playwright().start()
+        browser, context, page, _reused = _get_browser_context_page(playwright_obj)
+        set_current_browser(browser)
+        set_current_context(context)
+        page.goto(url, wait_until="domcontentloaded", timeout=WAIT_TIMEOUT)
+        wait_stable(page, LIST_NAV_SETTLE_MS)
+
+        # 未登录则先扫码登录（GUI 非交互走内置无头扫码登录）
+        if is_login_page(page):
+            if not _gui_login_flow(page, context, interactive):
+                raise LoginCancelledError
+        save_state(context)
+        print(f"登录态已保存到 {STATE_FILE}")
+
+        # 个人空间课程列表在嵌套 iframe 中，等待其出现并稳定
+        frame = None
+        for _ in range(20):  # 最多等 ~20s 让 iframe 加载
+            frame = find_course_list_frame(page)
+            if frame is not None:
+                break
+            try:
+                wait_stable(page, 1000)
+            except Exception:
+                pass
+        if frame is None:
+            print("[warn] 等待个人空间课程列表 iframe 超时")
+            return []
+        try:
+            wait_for_iframe_content(frame, 10_000)
+        except Exception:
+            pass
+
+        return extract_course_list(page)
+    finally:
+        clear_browser_state()
+        for obj in (context, browser, playwright_obj):
+            if obj:
+                try:
+                    if hasattr(obj, "close"):
+                        obj.close()
+                    elif hasattr(obj, "stop"):
+                        obj.stop()
+                except Exception:
+                    pass
+
+
 def save_homework(title: str, url: str, questions: list, progress_cb=None) -> str:
     """
     保存为 Word（主输出）和 JSON（元数据，隐藏目录）。
@@ -406,9 +477,19 @@ def save_homework(title: str, url: str, questions: list, progress_cb=None) -> st
         print(f"    [error] 生成 Word 失败：{e}")
         return ""
 
-    # 自动导出 PDF（如果开启）
+    # 自动导出 PDF（如果开启）：先检测转换环境，缺失则提示并跳过（不强制安装）
     if get_auto_export_pdf() and os.path.exists(docx_path):
-        export_pdf(docx_path)
+        try:
+            from exporters.pdf import detect_pdf_env
+            env = detect_pdf_env()
+            if not env["available"]:
+                print(f"    [warn] 未检测到 PDF 转换环境（{env.get('reason', '缺 Microsoft Word 或 LibreOffice')}），跳过自动导出 PDF")
+                print("    [warn] 抓取结果仍已保存为 Word，可安装 Microsoft Word 或 LibreOffice 后手动导出")
+            else:
+                export_pdf(docx_path)
+        except Exception as e:
+            print(f"    [warn] 检测 PDF 环境失败，仍尝试导出：{e}")
+            export_pdf(docx_path)
 
     # 若本次作业没有任何图片，删除空 images 子目录
     if os.path.isdir(images_dir) and not os.listdir(images_dir):
@@ -518,6 +599,25 @@ def load_homework_list(course_url: str = None, headless: bool = None, interactiv
                         obj.stop()
                 except Exception:
                     pass
+
+
+def _wait_for_active_growth(index: int, patience: float = 2.0) -> bool:
+    """动态队列迭代到尾部时，短等待运行中新增作业入队。
+
+    返回 True 表示队列已因新增而长于 index（有待抓新项）；False 表示在耐心窗口内
+    没有新增（判定为已全部处理），应结束本次抓取。等待期间持续响应停止信号。
+    """
+    elapsed = 0.0
+    poll = 0.25
+    while elapsed < patience:
+        if should_stop():
+            return False
+        if active_queue_length() > index:
+            return True
+        time.sleep(poll)
+        elapsed += poll
+    # 最后一次检查，兜住等待窗口边界上恰好入队的作业
+    return active_queue_length() > index
 
 
 @with_logging
@@ -640,15 +740,30 @@ def run(selected_homeworks: list = None, interactive: bool = True):
             if skipped > 0 and not get_force_regrab():
                 print(f"[info] 已跳过 {skipped} 个已抓取作业（共 {total} 个）")
             print(f"\n===== 共 {len(homeworks)} 个作业待抓取 =====\n")
-            total_count = len(homeworks)
-            if total_count == 0:
-                print("[info] 没有需要抓取的作业")
-                return
 
-        for idx, hw in enumerate(homeworks, 1):
+        # —— 动态队列：注册本次待抓列表；运行中 GUI 可追加新作业（bridge add_homeworks 写入队列）——
+        register_active_homeworks(homeworks)
+        total_count = active_queue_length()
+        if total_count == 0:
+            print("[info] 没有需要抓取的作业")
+            clear_active_queue()
+            return
+
+        idx = 0
+        while True:
             if should_stop():
                 print("\n[info] 收到停止信号，中断抓取")
                 break
+            # 队列迭代到尾部：短暂等待运行中新增作业，避免误判为「已全部处理」而提前结束
+            if idx >= active_queue_length():
+                if not _wait_for_active_growth(idx, 2.0):
+                    break
+                total_count = active_queue_length()
+                continue
+            hw = active_get_homework(idx)
+            idx += 1
+            total_count = max(total_count, active_queue_length())
+            mark_active_done(hw)
 
             print(f"[{idx}/{total_count}] 正在抓取：{hw['title']}")
             # 记录当前作业上下文，供单作业进度实时映射为总进度（与 progress 事件联动）
@@ -819,6 +934,7 @@ def run(selected_homeworks: list = None, interactive: bool = True):
     finally:
         # 确保浏览器进程被关闭，避免终端退出时无响应
         clear_browser_state()
+        clear_active_queue()
         for obj in (context, browser, playwright_obj):
             if obj:
                 try:

@@ -3,7 +3,34 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+
+
+def detect_pdf_env() -> dict:
+    """检测 PDF 转换环境是否可用（Microsoft Word 或 LibreOffice）。
+
+    docx2pdf 在 macOS 上依赖已安装的 Microsoft Word，LibreOffice 走命令行的
+    soffice。二者任一可用即可导出。返回：
+        {"available": bool, "method": "word"|"libreoffice"|None, "reason": str|None}
+    仅作检测，不尝试安装任何依赖。
+    """
+    # 1) Microsoft Word（docx2pdf 在 mac 的转换宿主）
+    word_candidates = [
+        "/Applications/Microsoft Word.app",
+        os.path.expanduser("~/Applications/Microsoft Word.app"),
+    ]
+    for p in word_candidates:
+        if os.path.isdir(p):
+            return {"available": True, "method": "word", "reason": None}
+    # 2) LibreOffice 命令行
+    if shutil.which("soffice"):
+        return {"available": True, "method": "libreoffice", "reason": None}
+    return {
+        "available": False,
+        "method": None,
+        "reason": "未检测到 Microsoft Word 或 LibreOffice，将无法导出 PDF",
+    }
 
 
 def export_pdf(docx_path: str, pdf_path: str = None) -> bool:

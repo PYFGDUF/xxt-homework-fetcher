@@ -1,5 +1,13 @@
 import SwiftUI
 
+/// 作业卡片几何参数：真实卡片与加载骨架屏共用同一套数值，
+/// 保证「加载动画 → 最终卡片」过渡时尺寸、间距、圆角完全一致，避免视觉跳变与留白差异。
+private let HW_CARD_H_PAD: CGFloat = 16     // 卡片水平内边距
+private let HW_CARD_V_PAD: CGFloat = 14     // 卡片垂直内边距
+private let HW_CARD_GAP: CGFloat = 12       // 卡片间距
+private let HW_CARD_RADIUS: CGFloat = 11    // 卡片圆角
+private let HW_ROW_ICON_GAP: CGFloat = 14   // 卡片内 勾选框↔内容 间距
+
 /// v2.0「焕新界面」：简洁大方的高级审美（v2 定稿）
 /// 扁平系统底色 + 发丝分隔线 + 充足留白；主题色仅用于主 CTA / 选中态 / 进度填充 / 状态强调。
 /// 单页任务流：顶部课程 URL → 中间作业列表 → 底部任务条；结果态覆盖主区为结果卡片。
@@ -8,14 +16,22 @@ struct HuanxinView: View {
     @Environment(AppState.self) private var app
     @State private var showDetails = false
     @State private var searchText = ""
+    /// 搜索框焦点态：⌘F 聚焦、⌘A 全选、⌘⇧A 清空（配合隐藏快捷键按钮）
+    @FocusState private var searchFocused: Bool
     /// 顶栏状态点的呼吸脉冲进度（true 后循环外扩淡出）
     @State private var statusPulse = false
+    /// 控件忙碌呼吸：加载 / 开始抓取按钮在引擎忙碌时的柔和缩放呼吸
+    @State private var ctlPulse = false
     /// 空闲面板图标上下浮动的偏移
     @State private var idleFloat: CGFloat = 0
     /// 抓取中是否暂回作业列表（收起进度面板，抓取继续在后台进行）
     @State private var showListDuringRun = false
     /// 任务条进度模块悬停态（提示可点击回到进度面板）
     @State private var progressHover = false
+
+    /// 引导流程阶段：登录后默认教程卡片 → 课程列表 → 作业列表（后续走现有流程）
+    private enum Phase: String, Equatable { case tutorial, course, works }
+    @State private var phase: Phase = .tutorial
 
     private var filteredHomeworks: [HomeworkItem] {
         let list = app.homeworks
@@ -39,12 +55,12 @@ struct HuanxinView: View {
             ZStack {
                 mainArea
                     // 抓取中默认收起作业列表；点「返回作业列表」可临时切回，抓取继续在后台进行
-                    .opacity((running && !showListDuringRun) ? 0 : 1)
-                if finished {
+                    .opacity((phase == .works && running && !showListDuringRun) ? 0 : 1)
+                if phase == .works && finished {
                     resultCard
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                if running && !showListDuringRun {
+                if phase == .works && running && !showListDuringRun {
                     runningPanel
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
@@ -53,6 +69,7 @@ struct HuanxinView: View {
             .animation(.smooth(duration: 0.4), value: running)
             .animation(.smooth(duration: 0.4), value: showListDuringRun)
             .animation(.smooth(duration: 0.35), value: loading)
+            .animation(.smooth(duration: 0.35), value: phase)
 
             Divider()
             taskBar
@@ -62,6 +79,55 @@ struct HuanxinView: View {
         // 运行结束时自动复位「返回作业列表」，下次抓取仍默认展示进度面板
         .onChange(of: app.isRunning) { _, isRunning in
             if !isRunning { showListDuringRun = false }
+        }
+        // 引擎忙碌（加载作业 / 抓取中）时让控件开启柔和呼吸动效
+        .onAppear { if app.isEngineBusy { startCtlPulse() } }
+        .onChange(of: app.isEngineBusy) { _, busy in
+            if busy { startCtlPulse() }
+        }
+        // 快捷键：⌘F 聚焦搜索，⌘A 全选，⌘⇧A 清空（隐藏按钮，保持窗口级可用）。
+        // 注意：overlay 默认居中对齐，按钮必须 opacity(0) + 零尺寸 + 锚定左上，
+        // 否则 macOS 会把带系统边框的空按钮渲染到界面正中。
+        .overlay(alignment: .topLeading) {
+            HStack(spacing: 0) {
+                Button { searchFocused = true } label: {}
+                    .keyboardShortcut("f", modifiers: .command)
+                    .opacity(0)
+                    .allowsHitTesting(false)
+                    .frame(width: 0, height: 0)
+                Button {
+                    if app.isRunning {
+                        // 运行中只追加未抓取作业（禁移除）
+                        app.addRunningHomeworks(filteredHomeworks.map(\.id))
+                    } else {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                            app.selectedHomeworkIDs.formUnion(filteredHomeworks.map(\.id))
+                        }
+                    }
+                } label: {}
+                    .keyboardShortcut("a", modifiers: .command)
+                    .opacity(0)
+                    .allowsHitTesting(false)
+                    .frame(width: 0, height: 0)
+                Button {
+                    guard !app.isRunning else { return } // 抓取中锁定清空
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                        app.selectedHomeworkIDs.removeAll()
+                    }
+                } label: {}
+                    .keyboardShortcut("a", modifiers: [.command, .shift])
+                    .opacity(0)
+                    .allowsHitTesting(false)
+                    .frame(width: 0, height: 0)
+            }
+            .fixedSize()
+        }
+    }
+
+    /// 控件忙碌呼吸：柔和缩放 + 透明度循环，替代传统转圈加载
+    private func startCtlPulse() {
+        withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+            ctlPulse = true
         }
     }
 
@@ -143,41 +209,70 @@ struct HuanxinView: View {
     // MARK: - 中间主区域
 
     private var mainArea: some View {
-        VStack(spacing: 0) {
-            courseRow
-            listHeader
-            listBody
+        Group {
+            switch phase {
+            case .tutorial:
+                tutorialView
+            case .course:
+                courseSelectView
+            case .works:
+                VStack(spacing: 0) {
+                    courseRow
+                    listHeader
+                    listBody
+                }
+            }
         }
     }
 
-    /// ① 课程：纯白字段 + 主题色加载按钮（平坦、无包裹卡）
+    /// ① 选择课程：账号课程选择（主）+ 粘贴课程 URL（兜底）+ 主题色加载按钮（平坦、无包裹卡）
     private var courseRow: some View {
         HStack(spacing: 10) {
-            Text("① 课程")
+            Text("① 选择课程")
                 .font(.callout.weight(.medium))
                 .foregroundStyle(.secondary)
-            TextField("粘贴课程 URL", text: Bindable(app).settings.courseURL)
-                .textFieldStyle(.plain)
-                .font(.body)
-                .submitLabel(.go)
-                .onSubmit { app.loadHomeworks() }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color(nsColor: .textBackgroundColor))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
-                        )
-                )
+            courseButton
+            // URL 兜底输入：选中课程会自动填充；也可手动粘贴课程链接后用「加载」读取
+            HStack(spacing: 6) {
+                TextField("或粘贴课程 URL", text: Bindable(app).settings.courseURL)
+                    .textFieldStyle(.plain)
+                    .font(.body)
+                    .submitLabel(.go)
+                    .onSubmit { app.loadHomeworks() }
+                // 一键清空长链接：比手动全选删除更省事
+                if !app.settings.courseURL.isEmpty {
+                    Button {
+                        app.settings.courseURL = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("清空链接")
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+                    )
+            )
             Button {
                 guard !app.isEngineBusy else { return }
                 app.loadHomeworks()
             } label: {
-                Text("加载")
+                Text(app.isEngineBusy ? "加载中…" : "加载")
                     .font(.callout.weight(.semibold))
                     .padding(.horizontal, 6)
+                    // 忙碌时的柔和缩放呼吸，替代传统转圈等待
+                    .scaleEffect(app.isEngineBusy ? (ctlPulse ? 0.96 : 1.0) : 1.0)
+                    .opacity(app.isEngineBusy ? (ctlPulse ? 0.6 : 1.0) : 1.0)
             }
             .buttonStyle(.minimalBrand(theme: app.theme, disabled: app.isEngineBusy))
             .disabled(app.isEngineBusy)
@@ -187,62 +282,331 @@ struct HuanxinView: View {
         .padding(.top, 14)
     }
 
-    private var listHeader: some View {
-        HStack {
-            Text("② 选择作业")
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.secondary)
-            Spacer()
-            if !app.homeworks.isEmpty {
-                Text("已选 \(app.selectedHomeworkIDs.count) / \(filteredHomeworks.count)")
-                    .font(.footnote)
+    /// 「选择课程」文案：已选课程显示标题，否则提示选择
+    private var coursePickerLabel: String {
+        if let c = app.selectedCourse { return c.title }
+        return "选择课程…"
+    }
+
+    /// 「选择课程」入口（作业列表顶部）：展示当前所选课程，点击回到课程列表重新选择。
+    private var courseButton: some View {
+        Button {
+            withAnimation(.smooth(duration: 0.35)) { phase = .course }
+        } label: {
+            HStack(spacing: 8) {
+                coverDot
+                Text(coursePickerLabel)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 180, alignment: .leading)
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                Button("全选") {
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
-                        app.selectedHomeworkIDs.formUnion(filteredHomeworks.map(\.id))
+            }
+            .font(.callout.weight(.semibold))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(app.selectedCourse == nil ? Color(nsColor: .separatorColor) : app.theme.primary.opacity(0.55),
+                                  lineWidth: app.selectedCourse == nil ? 1 : 1.2)
+            )
+            .hoverLift(shadowColor: app.theme.primary)
+        }
+        .buttonStyle(.plain)
+        .disabled(app.isEngineBusy)
+        .help(app.selectedCourse == nil ? "点击选择要抓取的课程" : "当前所选课程：\(coursePickerLabel)，点此更换")
+    }
+
+    /// 已选课程的封面色圆点；未选时用灰色书本占位
+    private var coverDot: some View {
+        Group {
+            if let c = app.selectedCourse {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(courseTint(c))
+                    .frame(width: 16, height: 16)
+                    .overlay(
+                        Text(String(c.title.prefix(1)))
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                    )
+            } else {
+                Image(systemName: "square.grid.2x2")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(app.theme.primary)
+            }
+        }
+    }
+
+    // MARK: - 教程卡片（登录后默认引导，第一步为「选择课程」）
+
+    /// 默认阶段：教程卡片 + 下方「开始」按钮。点「开始」后进入课程列表。
+    private var tutorialView: some View {
+        // 加大主体元素、收紧留白，让引导更醒目清晰
+        VStack(spacing: 34) {
+            VStack(spacing: 18) {
+                Image(systemName: "graduationcap.fill")
+                    .font(.system(size: 62, weight: .medium))
+                    .foregroundStyle(app.theme.primary)
+                    .symbolEffect(.bounce, options: .nonRepeating, value: tutorialTick)
+                Text("三步搞定作业抓取")
+                    .font(.largeTitle.weight(.bold))
+                    .foregroundStyle(.primary)
+                Text("从学习通账号选择课程，勾选作业，一键输出 Word 文档")
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 22) {
+                IdleStep(number: "1", icon: "square.grid.2x2", title: "选择课程",
+                         subtitle: "从账号选要抓取的课程", theme: app.theme)
+                stepArrow
+                IdleStep(number: "2", icon: "checklist", title: "勾选作业",
+                         subtitle: "选择要抓取的内容", theme: app.theme)
+                stepArrow
+                IdleStep(number: "3", icon: "play.fill", title: "开始抓取",
+                         subtitle: "输出 Word 文档", theme: app.theme)
+            }
+            Button {
+                startOnboarding()
+            } label: {
+                Text("开始")
+                    .font(.callout.weight(.semibold))
+                    .frame(minWidth: 230)
+                    .padding(.vertical, 4)
+            }
+            .buttonStyle(.minimalBrand(theme: app.theme))
+            .help("进入课程列表，选择要抓取的课程")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            tutorialTick.toggle()
+        }
+    }
+
+    /// 触发教程图标弹动的一次性 tick
+    @State private var tutorialTick = false
+    // 课程卡片网格的入场动效开关：false→true 触发卡片依次弹入
+    @State private var courseEntrance = false
+
+    /// 点「开始」：进入课程列表；若尚未加载课程则自动拉取
+    private func startOnboarding() {
+        withAnimation(.smooth(duration: 0.35)) { phase = .course }
+        if app.courses.isEmpty && !app.isLoadingCourses {
+            app.loadCourses()
+        }
+    }
+
+    // MARK: - 课程列表（选课程阶段，主区域卡片网格）
+
+    private var courseColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: 196, maximum: 320), spacing: 16)]
+    }
+
+    /// 课程排序：进行中课程在前，已结束课程置底。
+    private var sortedCourses: [CourseItem] {
+        app.courses.sorted { a, b in
+            if a.ended != b.ended { return !a.ended }
+            return a.title.localizedStandardCompare(b.title) == .orderedAscending
+        }
+    }
+
+    /// 选课程阶段：标题栏 + 课程卡片网格。点选卡片即选中并进入作业列表。
+    private var courseSelectView: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text("① 选择课程")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
+                if !app.courses.isEmpty {
+                    Text("共 \(app.courses.count) 门")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Spacer()
+                if app.isLoadingCourses && app.courses.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.clockwise")
+                            .rotationEffect(.degrees(app.isLoadingCourses ? 360 : 0))
+                            .animation(.linear(duration: 1).repeatForever(autoreverses: false), value: app.isLoadingCourses)
+                        Text("加载中…")
+                    }
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.secondary)
+                }
+                Button("刷新") {
+                    app.loadCourses()
+                }
+                .buttonStyle(.minimalOutline(theme: app.theme))
+                .disabled(app.isEngineBusy)
+                .help("重新从学习通账号拉取课程列表")
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 14)
+            .padding(.bottom, 12)
+            Divider()
+            courseListContent
+        }
+    }
+
+    @ViewBuilder
+    private var courseListContent: some View {
+        if app.isLoadingCourses && app.courses.isEmpty {
+            VStack(spacing: 0) {
+                // 顶部细流光提示「正在加载课程…」
+                LoadingTopStrip(theme: app.theme)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                SkeletonCourseList(theme: app.theme)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        } else if app.courses.isEmpty {
+            VStack(spacing: 14) {
+                Image(systemName: "books.vertical")
+                    .font(.system(size: 40, weight: .light))
+                    .foregroundStyle(.secondary)
+                Text("还没有加载到课程")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Button {
+                    app.loadCourses()
+                } label: {
+                    Label("加载课程列表", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.minimalBrand(theme: app.theme))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                LazyVGrid(columns: courseColumns, spacing: 14) {
+                    ForEach(Array(sortedCourses.enumerated()), id: \.element.id) { index, course in
+                        CourseCard(course: course, isSelected: app.selectedCourse?.id == course.id) {
+                            pickCourse(course)
+                        }
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .scale(scale: 0.9)).combined(with: .move(edge: .bottom)),
+                            removal: .opacity))
+                        .animation(.spring(response: 0.55, dampingFraction: 0.78).delay(Double(index) * 0.045),
+                                   value: courseEntrance)
                     }
                 }
-                .buttonStyle(.plain)
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.primary.opacity(0.06))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
-                )
-                .hoverLift(shadowColor: .secondary, enabled: !isAllSelected)
-                .disabled(isAllSelected)
-                Button("清空") {
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
-                        app.selectedHomeworkIDs.removeAll()
+                .padding(20)
+            }
+            .onAppear {
+                // 进入课程列表时触发卡片依次弹入（仅在首次出现时）
+                guard !courseEntrance else { return }
+                withAnimation { courseEntrance = true }
+            }
+        }
+    }
+
+    /// 点选课程：记录选中 → 进入作业列表 → 自动加载该课作业列表（衔接「② 选择作业」）
+    private func pickCourse(_ course: CourseItem) {
+        app.selectCourse(course)
+        withAnimation(.smooth(duration: 0.35)) { phase = .works }
+        app.loadHomeworks()
+    }
+
+    private var listHeader: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Text("② 选择作业")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if !app.homeworks.isEmpty {
+                    Text("已选 \(app.selectedHomeworkIDs.count) / \(filteredHomeworks.count)")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    Button("全选") {
+                        if app.isRunning {
+                            // 运行中只追加未抓取作业（禁移除）
+                            app.addRunningHomeworks(filteredHomeworks.map(\.id))
+                        } else {
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                                app.selectedHomeworkIDs.formUnion(filteredHomeworks.map(\.id))
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.primary.opacity(0.06))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+                    )
+                    .hoverLift(shadowColor: .secondary, enabled: !isAllSelected)
+                    .disabled(isAllSelected)
+                    Button("清空") {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                            app.selectedHomeworkIDs.removeAll()
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.primary.opacity(0.06))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+                    )
+                    .hoverLift(shadowColor: .secondary, enabled: !app.selectedHomeworkIDs.isEmpty)
+                    .disabled(app.isRunning || app.selectedHomeworkIDs.isEmpty)
+                }
+            }
+            if !app.homeworks.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("搜索作业标题…", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .font(.callout)
+                        .focused($searchFocused)
+                    // 正在搜索时提供一键清除，符合系统搜索框习惯
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("清除搜索")
                     }
                 }
-                .buttonStyle(.plain)
-                .font(.callout.weight(.medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.primary.opacity(0.06))
+                        .fill(Color(nsColor: .textBackgroundColor))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+                        )
                 )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
-                )
-                .hoverLift(shadowColor: .secondary, enabled: !app.selectedHomeworkIDs.isEmpty)
-                .disabled(app.selectedHomeworkIDs.isEmpty)
             }
         }
         .padding(.horizontal, 20)
-        .padding(.top, 16)
-        .padding(.bottom, 6)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
     }
 
     @ViewBuilder
@@ -260,7 +624,7 @@ struct HuanxinView: View {
             .animation(.easeInOut(duration: 0.25), value: filteredHomeworks.isEmpty)
         } else {
             ScrollView {
-                LazyVStack(spacing: 11) {
+                LazyVStack(spacing: HW_CARD_GAP) {
                     ForEach(filteredHomeworks) { hw in
                         HomeworkRow(item: hw)
                             .transition(.asymmetric(
@@ -302,7 +666,7 @@ struct HuanxinView: View {
                 .padding(.horizontal, 20)
                 .padding(.bottom, 10)
             }
-            SkeletonCardList()
+            SkeletonCardList(theme: app.theme)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -320,14 +684,14 @@ struct HuanxinView: View {
                 Text("暂无作业")
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(.primary)
-                Text("在上方粘贴课程 URL 后点击「加载」")
+                Text("在上方选择课程或粘贴课程 URL，然后点击「加载」")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
             }
             // 常驻三步流程引导：不依赖“已输入 URL”，首开即可见
             HStack(spacing: 12) {
-                IdleStep(number: "1", icon: "link", title: "填入课程 URL",
-                         subtitle: "从学习通课程页复制链接", theme: app.theme)
+                IdleStep(number: "1", icon: "square.grid.2x2", title: "选择课程",
+                         subtitle: "从账号选要抓取的课程", theme: app.theme)
                 stepArrow
                 IdleStep(number: "2", icon: "checklist", title: "勾选作业",
                          subtitle: "选择要抓取的内容", theme: app.theme)
@@ -344,7 +708,7 @@ struct HuanxinView: View {
 
     private var stepArrow: some View {
         Image(systemName: "chevron.right")
-            .font(.system(size: 13, weight: .semibold))
+            .font(.system(size: 16, weight: .semibold))
             .foregroundStyle(.tertiary)
             .symbolRenderingMode(.monochrome)
     }
@@ -637,19 +1001,21 @@ struct HuanxinView: View {
 
     private var taskBar: some View {
         HStack(spacing: 16) {
-            // 摘要：当前作业标题 / 计数
-            VStack(alignment: .leading, spacing: 2) {
-                Text(runningTitle)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(running ? progressCountText : "\(app.selectedHomeworkIDs.count) 个已选作业")
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+            // 摘要：当前作业标题 / 计数（仅作业阶段显示；教程/选课阶段整行隐藏，只留右下角运行详情）
+            if phase == .works {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(runningTitle)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(running ? progressCountText : "\(app.selectedHomeworkIDs.count) 个已选作业")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                .frame(width: 240, alignment: .leading)
             }
-            .frame(width: 240, alignment: .leading)
 
             // 单一进度：大百分比 + 主题色填充
             // 点「返回作业列表」收起的进度面板可由此重新唤起，回到抓取过程页面
@@ -718,17 +1084,21 @@ struct HuanxinView: View {
                     .animation(.easeInOut(duration: 0.18), value: app.stopArmed)
                 }
 
-                // 非运行时才显示「开始抓取」主按钮；运行时由「停止」独占，避免“抓取中…”灰显按钮造成语义冗余
-                if !running {
+                // 非运行时才显示「开始抓取」主按钮；运行时由「停止」独占，避免“抓取中…”灰显按钮造成语义冗余；
+                // 教程/选课阶段无作业可抓，隐藏以保持底部仅剩运行详情圆钮
+                if !running && phase == .works {
                     Button {
                         app.startSelected()
                     } label: {
                         Label(startButtonState.title,
-                              systemImage: startButtonState.icon)
-                            .font(.body.weight(.semibold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 3)
-                    }
+                          systemImage: startButtonState.icon)
+                        .font(.body.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 3)
+                        // 引擎忙碌（加载中）时的柔和呼吸，替代传统转圈等待
+                        .scaleEffect(app.isEngineBusy ? (ctlPulse ? 0.97 : 1.0) : 1.0)
+                        .opacity(app.isEngineBusy ? (ctlPulse ? 0.7 : 1.0) : 1.0)
+                }
                     .buttonStyle(.minimalBrand(theme: app.theme,
                                                disabled: app.isEngineBusy || app.selectedHomeworkIDs.isEmpty,
                                                gradient: app.theme.gradient))
@@ -782,61 +1152,85 @@ struct HuanxinView: View {
     }
 }
 
-/// 作业卡片：勾选框 + 标题 + 状态徽标；选中/悬停均有动效
+/// 作业卡片：勾选框 + 标题 + 状态徽标；与骨架屏卡片同尺寸、同样式，仅保留极简选中反馈
 private struct HomeworkRow: View {
     @Environment(AppState.self) private var app
     let item: HomeworkItem
-    @State private var hovering = false
 
     private var theme: AppTheme { app.theme }
+    /// 本会话内已抓取成功的印记（刷新列表后仍保留）
+    private var scraped: Bool { app.completedHomeworkIds.contains(item.id) }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: HW_ROW_ICON_GAP) {
             CheckboxMark(isOn: selected, tint: theme.primary)
                 .accessibilityLabel(item.title)
             Text(item.title)
                 .font(.callout.weight(.medium))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .opacity(app.isRunning && selected ? 0.72 : 1)
+            if app.isRunning && selected {
+                Image(systemName: "lock.fill")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .help("抓取中已锁定作业选择")
+                    .transition(.scale.combined(with: .opacity))
+            }
             Spacer(minLength: 4)
             statusBadge
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 13)
+        .padding(.horizontal, HW_CARD_H_PAD)
+        .padding(.vertical, HW_CARD_V_PAD)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: HW_CARD_RADIUS, style: .continuous)
                 .fill(cardFill)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: HW_CARD_RADIUS, style: .continuous)
                 .strokeBorder(cardBorder, lineWidth: selected ? 1.5 : 1)
         )
-        .shadow(color: theme.primary.opacity(selected ? 0.14 : 0), radius: 6, y: 2)
-        .scaleEffect(hovering && !selected ? 1.015 : (selected ? 1.02 : 1))
-        .animation(.spring(response: 0.4, dampingFraction: 0.72), value: selected)
-        .animation(.easeOut(duration: 0.16), value: hovering)
+        // 「已抓」印记：左侧主题色描边，「从左边滑入」的绘制动效（spring）
+        .overlay(alignment: .leading) {
+            Capsule()
+                .fill(theme.primary.opacity(0.8))
+                .frame(width: 3.5)
+                .padding(.vertical, 11)
+                .scaleEffect(x: scraped ? 1 : 0, anchor: .leading)
+                .animation(.spring(response: 0.5, dampingFraction: 0.62), value: scraped)
+        }
         .contentShape(Rectangle())
         .onTapGesture { toggle() }
-        .onHover { hovering = $0 }
+        // 勾选/印记/锁定变化时的柔和弹性衔接，选中圆角描边与锁定图标随之过渡
+        .animation(.spring(response: 0.42, dampingFraction: 0.78), value: selected)
+        .animation(.spring(response: 0.42, dampingFraction: 0.78), value: app.isRunning)
     }
 
     private var selected: Bool { app.selectedHomeworkIDs.contains(item.id) }
 
-    /// 卡片底色：选中→主题色浅染；悬停未选中→轻微提亮；默认→控件底色
+    /// 卡片底色：选中→极淡主题色染；否则与骨架屏完全一致（controlBackgroundColor）
     private var cardFill: Color {
-        if selected { return theme.primary.opacity(0.10) }
-        if hovering { return Color(nsColor: .controlBackgroundColor).opacity(0.7) }
+        if selected { return theme.primary.opacity(0.08) }
         return Color(nsColor: .controlBackgroundColor)
     }
 
-    /// 卡片描边：选中→主题色；悬停→分隔线加重；默认→弱分隔线
+    /// 卡片描边：选中→主题色半透明细边；否则与骨架屏一致（分隔线 0.4 透明度）
     private var cardBorder: Color {
-        if selected { return theme.primary.opacity(0.65) }
-        if hovering { return Color(nsColor: .separatorColor).opacity(0.8) }
+        if selected { return theme.primary.opacity(0.55) }
         return Color(nsColor: .separatorColor).opacity(0.4)
     }
 
     private func toggle() {
+        // 运行中：只允许「新增未抓取作业」，禁止移除/反选运行中的作业。
+        // 引擎已升级为动态队列，新增的作业会自动进入抓取队列并在本轮处理；
+        // 反选会造成「引擎已抓却不再计入结果」的错位，故运行期一律禁止。
+        if app.isRunning {
+            guard !selected else { return }
+            app.addRunningHomeworks([item.id])
+            return
+        }
         withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
             if selected {
                 app.selectedHomeworkIDs.remove(item.id)
@@ -1046,11 +1440,12 @@ private struct LoadingTopStrip: View {
 /// 骨架屏占位卡片列表：依次弹入模拟作业列表，加载完成后由外层淡出替换为真实卡片
 private struct SkeletonCardList: View {
     @State private var appeared = false
+    let theme: AppTheme
 
     var body: some View {
-        VStack(spacing: 9) {
+        VStack(spacing: HW_CARD_GAP) {
             ForEach(0..<4, id: \.self) { i in
-                SkeletonCard()
+                SkeletonCard(theme: theme)
                     .padding(.horizontal, 20)
                     .transition(.asymmetric(
                         insertion: .opacity.combined(with: .move(edge: .bottom)).combined(with: .scale(scale: 0.98)),
@@ -1064,37 +1459,41 @@ private struct SkeletonCardList: View {
     }
 }
 
-/// 单张骨架占位卡：勾选框 + 两行标题条 + 状态条，带流光扫过
+/// 单张骨架占位卡：勾选框 + 两行标题条 + 状态条，带主题色流光扫过（与顶部加载条同语言）
 private struct SkeletonCard: View {
+    let theme: AppTheme
+
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: HW_ROW_ICON_GAP) {
             RoundedRectangle(cornerRadius: 5)
                 .fill(Color.primary.opacity(0.10))
                 .frame(width: 17, height: 17)
             VStack(alignment: .leading, spacing: 9) {
-                SkeletonBar(height: 12)
-                SkeletonBar(height: 9)
+                SkeletonBar(theme: theme, height: 12)
+                SkeletonBar(theme: theme, height: 9)
                     .frame(width: 120)
             }
             Spacer(minLength: 8)
-            SkeletonBar(height: 9)
+            SkeletonBar(theme: theme, height: 9)
                 .frame(width: 56)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 13)
+        .padding(.horizontal, HW_CARD_H_PAD)
+        .padding(.vertical, HW_CARD_V_PAD)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: HW_CARD_RADIUS, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 1)
+            RoundedRectangle(cornerRadius: HW_CARD_RADIUS, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.4), lineWidth: 1)
         )
     }
 }
 
-/// 灰色底 + 往复流光扫过的骨架条
+/// 灰色底 + 主题色往复流光扫过的骨架条（洗白改为品牌色，与 LoadingTopStrip 一致）
 private struct SkeletonBar: View {
+    let theme: AppTheme
     let height: CGFloat
     @State private var sweep: CGFloat = -1
 
@@ -1103,7 +1502,7 @@ private struct SkeletonBar: View {
             ZStack {
                 Capsule().fill(Color.primary.opacity(0.10))
                 Capsule()
-                    .fill(LinearGradient(colors: [.clear, Color.white.opacity(0.55), .clear],
+                    .fill(LinearGradient(colors: [.clear, theme.primary.opacity(0.30), .clear],
                                          startPoint: .leading, endPoint: .trailing))
                     .frame(height: height)
                     .offset(x: sweep * geo.size.width)
@@ -1111,6 +1510,95 @@ private struct SkeletonBar: View {
             .clipShape(Capsule())
         }
         .frame(height: height)
+        .onAppear {
+            sweep = -1
+            withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) {
+                sweep = 1
+            }
+        }
+    }
+}
+
+// MARK: - 课程骨架屏（刷新课程界面的年轻化占位）
+
+/// 课程网格骨架屏：占位卡与真实课程卡同构（上封面 + 下两行标题），带主题色流光扫过。
+private struct SkeletonCourseList: View {
+    @State private var appeared = false
+    let theme: AppTheme
+    private let columns = [GridItem(.adaptive(minimum: 196, maximum: 320), spacing: 16)]
+    // 官方封面宽高比约 240:130
+    private let coverRatio: CGFloat = 240.0 / 130.0
+
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 14) {
+                ForEach(0..<6, id: \.self) { i in
+                    SkeletonCourseCard(theme: theme, coverRatio: coverRatio)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .scale(scale: 0.96)).combined(with: .move(edge: .bottom)),
+                            removal: .opacity))
+                        .animation(.spring(response: 0.5, dampingFraction: 0.72).delay(Double(i) * 0.06),
+                                   value: appeared)
+                }
+            }
+            .padding(20)
+        }
+        .onAppear { appeared = true }
+    }
+}
+
+/// 单张课程骨架占位卡：上整宽封面块 + 右下两行标题条，复用 SkeletonBar 的流光语言。
+private struct SkeletonCourseCard: View {
+    let theme: AppTheme
+    let coverRatio: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            GeometryReader { geo in
+                SkeletonShimmer(theme: theme)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            }
+            .frame(maxWidth: .infinity)
+            .aspectRatio(coverRatio, contentMode: .fit)
+            .clipped()
+
+            VStack(alignment: .leading, spacing: 7) {
+                SkeletonBar(theme: theme, height: 12)
+                SkeletonBar(theme: theme, height: 9)
+                    .frame(width: 90)
+            }
+            .padding(.horizontal, 3)
+            .padding(.top, 10)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 1)
+        )
+    }
+}
+
+/// 整块流光底：灰色底 + 主题色条纹扫过，用于封面这类大面积占位。
+private struct SkeletonShimmer: View {
+    let theme: AppTheme
+    @State private var sweep: CGFloat = -1
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                Color.primary.opacity(0.08)
+                LinearGradient(colors: [.clear, theme.primary.opacity(0.18), .clear],
+                               startPoint: .leading, endPoint: .trailing)
+                    .frame(width: geo.size.width * 0.6)
+                    .offset(x: sweep * geo.size.width * 1.3)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
         .onAppear {
             sweep = -1
             withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) {
@@ -1326,45 +1814,209 @@ private struct IdleStep: View {
     @State private var lifted = false
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 9) {
             // 圆形步骤图标：主题色软填充 + 投影抬升
             ZStack {
                 Circle()
                     .fill(theme.primary.opacity(0.12))
                 Image(systemName: icon)
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(theme.primary)
                 Text(number)
-                    .font(.system(size: 10, weight: .heavy))
+                    .font(.system(size: 11, weight: .heavy))
                     .foregroundStyle(.white)
-                    .frame(width: 15, height: 15)
+                    .frame(width: 19, height: 19)
                     .background(Circle().fill(theme.primary))
-                    .offset(x: 19, y: -19)
+                    .offset(x: 24, y: -24)
             }
-            .frame(width: 52, height: 52)
+            .frame(width: 64, height: 64)
             Text(title)
-                .font(.subheadline.weight(.semibold))
+                .font(.headline.weight(.semibold))
                 .foregroundStyle(.primary)
             Text(subtitle)
-                .font(.caption)
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(width: 132)
-        .padding(.vertical, 16)
+        .frame(width: 168)
+        .padding(.vertical, 18)
         .padding(.horizontal, 10)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
         )
         .shadow(color: theme.primary.opacity(lifted ? 0.12 : 0.04), radius: 8, y: 3)
         .scaleEffect(lifted ? 1.03 : 1)
         .animation(.easeOut(duration: 0.18), value: lifted)
         .onHover { lifted = $0 }
+    }
+}
+
+// MARK: - 课程卡片（选课程主区域）
+
+/// 按课程 id/url 稳定派生一个封面色相，保证同一课程每次都得到相同颜色。
+private func courseTint(_ c: CourseItem) -> Color {
+    let key = c.courseID.isEmpty ? c.url : c.courseID
+    var hash: UInt64 = 5381
+    for byte in key.utf8 {
+        hash = (hash &* 33) &+ UInt64(byte)
+    }
+    let hue = Double(hash % 360) / 360.0
+    return Color(hue: hue, saturation: 0.48, brightness: 0.88)
+}
+
+/// 单门课程卡片（贴近学习通官方样式）：上方全宽真实封面缩略图 + 下方标题（两行截断）+ 教师。
+/// 选中态主题色描边 + 封面右上角对勾角标；悬停轻微抬升。
+private struct CourseCard: View {
+    @Environment(AppState.self) private var app
+    let course: CourseItem
+    let isSelected: Bool
+    let onTap: () -> Void
+    private var theme: AppTheme { app.theme }
+    private var tint: Color { courseTint(course) }
+    @State private var hovering = false
+    // 点按反馈：短暂下压后回弹（scale 0.98）
+    @State private var isSelectedTapped = false
+
+    // 官方封面约 240×130（宽高比 ≈ 1.846，页面实际展示也是该比例）
+    private let coverRatio: CGFloat = 240.0 / 130.0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            cover
+                .overlay {
+                    if course.ended {
+                        // 已结束课程：深色遮罩 + 状态标签
+                        ZStack {
+                            Color.black.opacity(0.45)
+                            VStack(spacing: 4) {
+                                Image(systemName: "lock.fill")
+                                    .font(.system(size: 14, weight: .semibold))
+                                Text("课程已结束")
+                                    .font(.caption.weight(.semibold))
+                            }
+                            .foregroundStyle(.white)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    if isSelected {
+                        ZStack {
+                            Circle()
+                                .fill(Color(nsColor: .windowBackgroundColor))
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundStyle(theme.primary)
+                        }
+                        .frame(width: 26, height: 26)
+                        .padding(7)
+                        .transition(.asymmetric(
+                            insertion: .scale(scale: 0.3).combined(with: .opacity),
+                            removal: .opacity))
+                    }
+                }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(course.title)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(course.teacher.isEmpty ? "教师未知" : course.teacher)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 3)
+            .padding(.top, 8)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        // 选中态：主题色柔和外发光雾环（内外对接渐变，随选中/悬停出现）
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(theme.primary.opacity(isSelected || hovering ? 0.28 : 0), lineWidth: 1.5)
+                .padding(-2.5)
+                .blur(radius: 4)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(
+                    isSelected ? theme.primary.opacity(0.85)
+                               : hovering ? theme.primary.opacity(0.55)
+                                          : Color(nsColor: .separatorColor).opacity(0.35),
+                    lineWidth: isSelected ? 1.5 : 1)
+        )
+        .contentShape(Rectangle())
+        .scaleEffect(hovering ? 1.025 : (isSelectedTapped ? 0.98 : 1))
+        .shadow(color: (isSelected || hovering ? theme.primary : .clear).opacity(isSelected ? 0.22 : 0.16), radius: 14, y: 5)
+        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: hovering)
+        .animation(.spring(response: 0.45, dampingFraction: 0.7), value: isSelected)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelectedTapped)
+        .onHover { hovering = $0 }
+        .onTapGesture {
+            onTap()
+            // 点按反馈：轻微下压后回弹
+            isSelectedTapped = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+                withAnimation { isSelectedTapped = false }
+            }
+        }
+        .help(course.title)
+    }
+
+    /// 真实课程封面缩略图：全宽、按官方 240×130 比例，加载成功显示封面；无封面/失败用主题色渐变兜底。
+    private var cover: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = w / coverRatio
+            Group {
+                if coverURL != nil {
+                    AsyncImage(url: coverURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().scaledToFill()
+                                .frame(width: w, height: h)
+                        case .failure:
+                            placeholder.frame(width: w, height: h)
+                        default:
+                            placeholder.opacity(0.7).frame(width: w, height: h)
+                        }
+                    }
+                } else {
+                    placeholder.frame(width: w, height: h)
+                }
+            }
+            .scaleEffect(hovering ? 1.06 : 1)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+        .frame(maxWidth: .infinity)
+        .aspectRatio(coverRatio, contentMode: .fit)
+        .clipped()
+        .animation(.spring(response: 0.4, dampingFraction: 0.78), value: hovering)
+    }
+
+    private var coverURL: URL? {
+        guard !course.cover.isEmpty else { return nil }
+        return URL(string: course.cover)
+    }
+
+    private var placeholder: some View {
+        ZStack {
+            LinearGradient(colors: [tint, tint.opacity(0.55)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            Image(systemName: "book.closed.fill")
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.9))
+        }
     }
 }

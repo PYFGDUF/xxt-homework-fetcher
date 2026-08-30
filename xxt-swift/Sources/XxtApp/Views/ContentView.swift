@@ -67,9 +67,6 @@ struct ContentView: View {
         ToolbarItem(placement: .navigation) {
             uiModeSwitcher
         }
-        ToolbarItem(placement: .primaryAction) {
-            themeMenu
-        }
         ToolbarItem(placement: .navigation) {
             Button {
                 app.openLastOutput()
@@ -264,31 +261,7 @@ struct ContentView: View {
         .help("切换界面外观")
     }
 
-    /// 主题色选择菜单（焕新界面专用入口，经典界面保持原 accentColor）
-    private var themeMenu: some View {
-        Menu {
-            ForEach(AppTheme.all) { theme in
-                Button {
-                    app.themeID = theme.id
-                } label: {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(theme.swatch)
-                            .frame(width: 14, height: 14)
-                        Text(theme.name)
-                        if theme.id == app.themeID {
-                            Spacer()
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                }
-            }
-        } label: {
-            Label("主题", systemImage: "paintpalette")
-        }
-        .help("切换主题色")
-    }
-
+    /// 主题为固定「活力靛蓝」，不再提供切换入口。
     private var detailFooter: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {

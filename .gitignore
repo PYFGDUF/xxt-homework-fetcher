@@ -46,3 +46,11 @@ backups/
 .vscode/
 .idea/
 *.swp
+
+# ===== 开发期临时/探针脚本（含个人路径，勿入库） =====
+script/_tmp_*
+verify_structure_probe.py
+xxt_html.zip
+
+# ===== Windows 开发规划文档（另起仓库存放，不入 macOS 主仓） =====
+/docs/

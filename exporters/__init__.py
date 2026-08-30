@@ -9,7 +9,7 @@ from exporters.word import (
     add_markdown_paragraph,
     save_word,
 )
-from exporters.pdf import export_pdf
+from exporters.pdf import export_pdf, detect_pdf_env
 from exporters.merge import merge_all_docx
 
 __all__ = [
@@ -21,5 +21,6 @@ __all__ = [
     "add_markdown_paragraph",
     "save_word",
     "export_pdf",
+    "detect_pdf_env",
     "merge_all_docx",
 ]

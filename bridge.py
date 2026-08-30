@@ -34,6 +34,7 @@ if _APP_DIR not in sys.path:
     sys.path.insert(0, _APP_DIR)
 
 import chaoxing_spider as cs  # noqa: E402
+from core.active_queue import add_active_homeworks, is_active_registered  # noqa: E402
 from core import config  # noqa: E402
 from core import chromium as chromium_mod  # noqa: E402
 import repair as repair_mod  # noqa: E402
@@ -275,6 +276,17 @@ def _do_load_homeworks(params: dict):
         _emit({"kind": "done", "value": {"success": False, "message": f"加载作业失败：{e}"}})
 
 
+def _do_list_courses():
+    """后台线程：列取个人空间课程列表并回 courseList 事件（供 UI「选课程」）。"""
+    try:
+        courses = cs.list_courses(interactive=False)
+        _emit({"kind": "courseList", "value": {"courses": courses}})
+        _emit({"kind": "done", "value": {"success": True, "message": f"已列出 {len(courses)} 门课程"}})
+    except Exception as e:
+        _emit({"kind": "error", "value": {"message": f"获取课程列表失败：{e}"}})
+        _emit({"kind": "done", "value": {"success": False, "message": f"获取课程列表失败：{e}"}})
+
+
 def _do_standalone_login():
     """后台线程：独立发起扫码登录（设置中「登录学习通」）。"""
     try:
@@ -313,6 +325,40 @@ def _do_run(params: dict):
         traceback.print_exc()
         _emit({"kind": "error", "value": {"message": f"抓取异常：{e}"}})
         _emit({"kind": "done", "value": {"success": False, "message": f"抓取异常：{e}"}})
+
+
+def _do_add(params: dict):
+    """后台线程/同步：运行中把新增选中的作业追加进当前抓取队列。"""
+    ids = [str(i) for i in (params.get("homework_ids") or [])]
+    # 注意：错误路径一律发 error 事件，绝不能发 done —— done 会被 Swift 前端当作
+    # 「本轮抓取已结束」并点亮结果卡，导致正在进行的抓取被误判为完成。
+    if not ids:
+        _emit({"kind": "error", "value": {"message": "未指定要追加的作业"}})
+        return
+    if not is_active_registered():
+        _emit({"kind": "error", "value": {"message": "当前没有进行中的抓取队列"}})
+        return
+    want = set(ids)
+
+    def _matches(hw: dict) -> bool:
+        for key in ("id", "url", "list_url"):
+            v = hw.get(key)
+            if v is not None and str(v) in want:
+                return True
+        return False
+
+    to_add = [hw for hw in _HOMEWORKS_CACHE if _matches(hw)]
+    if not to_add:
+        _emit({"kind": "error", "value": {"message": "未在已加载作业中找到要追加的作业"}})
+        return
+    n = add_active_homeworks(to_add)
+    into = ", ".join(hw["title"] for hw in to_add[:5])
+    if len(to_add) > 5:
+        into += "…"
+    _emit({"kind": "log", "value": {
+        "message": f"运行中已加入 {n} 个新作业进抓取队列：{into}",
+        "level": "info",
+    }})
 
 
 def _do_repair(params: dict):
@@ -410,8 +456,16 @@ def _handle(cmd: str, params: dict) -> dict | None:
     if cmd == "load_homeworks":
         _run_on_worker(lambda: _do_load_homeworks(params))
         return {"ok": True, "result": {"accepted": True}}
+    if cmd == "list_courses":
+        # 「选课程」：从个人空间列取账号课程列表，结果通过 courseList 事件回传
+        _run_on_worker(_do_list_courses)
+        return {"ok": True, "result": {"accepted": True}}
     if cmd == "start":
         _run_on_worker(lambda: _do_run(params))
+        return {"ok": True, "result": {"accepted": True}}
+    if cmd == "add_homeworks":
+        # 运行中把新选中的作业追加进当前抓取队列（引擎会随迭代自动处理）
+        _run_on_worker(lambda: _do_add(params))
         return {"ok": True, "result": {"accepted": True}}
     if cmd == "repair_selected":
         _run_on_worker(lambda: _do_repair(params))
@@ -419,6 +473,9 @@ def _handle(cmd: str, params: dict) -> dict | None:
     if cmd == "export_pdf":
         _run_on_worker(lambda: _do_export_pdf(params))
         return {"ok": True, "result": {"accepted": True}}
+    if cmd == "check_pdf_env":
+        from exporters.pdf import detect_pdf_env
+        return {"ok": True, "result": detect_pdf_env()}
     if cmd == "merge_docx":
         # 合并：优先使用最近一次输出子目录
         base = config.BASE_OUTPUT_DIR

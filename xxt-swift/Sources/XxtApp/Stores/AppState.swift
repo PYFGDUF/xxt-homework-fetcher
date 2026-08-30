@@ -25,8 +25,19 @@ final class AppState {
     var repairSelection: Set<String> = []
     var logAutoScroll = true
 
+    // 「选课程」流程：账号课程列表与当前选中课程
+    var courses: [CourseItem] = []
+    var selectedCourse: CourseItem?
+    // 正在加载课程列表（用于展示「加载中」反馈，区别于作业加载）
+    var isLoadingCourses = false
+    // 应用启动时是否已触发过一次静默预加载课程（保证只自动加载一次）
+    var didAutoPreloadCourses = false
+
     // 运行状态
     var isRunning = false
+    // 本次运行已下发引擎的作业 ID 集合（初始 = 开始抓取时选中的集合；
+    // 运行中「新增作业」会追加）。用于保证同一作业运行期只入队一次，且只允许新增、不允许移除。
+    var runAddHomeworkIDs: Set<String> = []
     // 停止二次确认态：第一次点「停止」置为 true（按钮变「确认停止」），第二次点才真正停止
     var stopArmed = false
     // 确认态超时自动复位用的可取消任务（.now + 10s）
@@ -73,14 +84,16 @@ final class AppState {
     var runEndDate: Date?
     // 最近一次抓取是否已结束（用于在任务流主视图切换「结果卡」）
     var lastRunFinished = false
+    // 本会话内已抓取成功的作业 id 集合：作业行首展示「已抓」印记，刷新列表后仍保留
+    var completedHomeworkIds = Set<String>()
     // 本次会话是否真正发起了抓取（用于区分「done 来自 load_homeworks」还是来自 start）
     private var fetchStarted = false
     // 主题 ID（本地持久化，仅预设主题，用户不可自由调色）
     var themeID: String {
         didSet { UserDefaults.standard.set(themeID, forKey: "themeID") }
     }
-    /// 当前生效主题
-    var theme: AppTheme { AppTheme.find(themeID) }
+    /// 当前生效主题（固定为「活力靛蓝」，不再提供切换入口）
+    var theme: AppTheme { AppTheme.find("indigo") }
 
     // v2.0 界面模式（焕新 / 经典），本地持久化
     var uiMode: AppUIMode {
@@ -225,9 +238,36 @@ final class AppState {
     func refreshLoginStatus() {
         engine.loginStatus { [weak self] loggedIn in
             DispatchQueue.main.async {
-                self?.isLoggedIn = loggedIn
+                guard let self else { return }
+                self.isLoggedIn = loggedIn
+                // 启动即静默预加载课程：已登录时在教程卡片期间就把课程列表拉好，
+                // 用户点「开始」时无需等待。仅执行一次。
+                if loggedIn {
+                    self.preloadCoursesIfLoggedIn()
+                }
             }
         }
+    }
+
+    /// 启动后台静默预加载课程列表（已登录且首次才执行）。
+    /// 若引擎此刻仍忙碌（例如正在拉取设置），稍作延迟重试，避免本次静默加载被吞掉。
+    func preloadCoursesIfLoggedIn(retriesRemaining: Int = 4) {
+        guard !didAutoPreloadCourses else { return }
+        guard isLoggedIn else { return }
+        if isEngineBusy {
+            guard retriesRemaining > 0 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.preloadCoursesIfLoggedIn(retriesRemaining: retriesRemaining - 1)
+            }
+            return
+        }
+        didAutoPreloadCourses = true
+        appendLog("已登录，后台静默加载课程列表…", level: "info")
+        engine.listCourses()
+        courses.removeAll()
+        selectedCourse = nil
+        isLoadingCourses = true
+        isEngineBusy = true
     }
 
     // MARK: - 事件处理
@@ -266,6 +306,11 @@ final class AppState {
                 showLoginSuccess = true
             }
             appendLog("登录成功", level: "success")
+        case .courseList:
+            isEngineBusy = false
+            isLoadingCourses = false
+            courses = event.value.courses ?? []
+            appendLog("已加载 \(courses.count) 门课程", level: "success")
         case .homeworkList:
             isEngineBusy = false
             homeworks = event.value.items ?? []
@@ -280,6 +325,7 @@ final class AppState {
             runImageFailCount = pendingImageFailures
         case .done:
             isEngineBusy = false
+            isLoadingCourses = false
             isRunning = false
             stopArmed = false
             cancelStopArmReset()
@@ -318,6 +364,7 @@ final class AppState {
             handleStatusEvent(event.value)
         case .error:
             isEngineBusy = false
+            isLoadingCourses = false
             appendLog(event.value.message ?? "错误", level: "error")
         }
     }
@@ -333,7 +380,8 @@ final class AppState {
             center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
             let content = UNMutableNotificationContent()
             content.title = "学习通作业爬取工具"
-            content.body = "抓取完成：已处理 \(selectedHomeworkIDs.count) 个作业"
+            // 用本轮实际处理结果计数（含运行中新增作业），而非一开始的勾选数，避免少报
+            content.body = "抓取完成：已处理 \(runOkCount + runFailCount) 个作业"
             content.sound = .default
             let req = UNNotificationRequest(
                 identifier: UUID().uuidString,
@@ -358,6 +406,7 @@ final class AppState {
             // 单作业进度：completed 置满，其余用引擎上报的 0~1 进度（未上报保持原值）
             if status == "completed" {
                 homeworks[idx].progress = 1.0
+                completedHomeworkIds.insert(homeworks[idx].id)
             } else if let p = value.progress {
                 homeworks[idx].progress = p
             }
@@ -416,12 +465,43 @@ final class AppState {
         }
     }
 
+    /// 「选课程」：请求引擎从个人空间列取账号课程列表。
+    /// 先复位所选课程与作业，保持状态干净；结果通过 courseList 事件回传后填充 courses。
+    func loadCourses() {
+        guard !isEngineBusy else {
+            appendLog("请等待当前任务完成后再选择课程", level: "warn")
+            return
+        }
+        if !isLoggedIn {
+            // 未登录时先引导扫码；扫码成功事件会触发 loginSuccess 复位，
+            // 用户可再次点击「选择课程」加载列表。
+            appendLog("请先扫码登录学习通，再选择课程", level: "warn")
+            startLogin()
+            return
+        }
+        lastRunFinished = false
+        courses.removeAll()
+        selectedCourse = nil
+        isLoadingCourses = true
+        isEngineBusy = true
+        appendLog("正在加载课程列表…", level: "info")
+        engine.listCourses()
+    }
+
+    /// 选定一门课程：记录它，并用它的课程入口 URL 填充 courseURL，
+    /// 供后续「加载作业列表」复用（engine 会自动跳到带 enc/t 的课程页）。
+    func selectCourse(_ course: CourseItem) {
+        selectedCourse = course
+        settings.courseURL = course.url
+        appendLog("已选择课程：\(course.title)", level: "success")
+    }
+
     func loadHomeworks() {
         let trimmed = settings.courseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            urlErrorMessage = "请先填写课程 URL，再点击刷新加载作业列表。"
+            urlErrorMessage = "请先选择课程或填写课程 URL，再点击加载作业列表。"
             showURLError = true
-            appendLog("请先填写课程 URL", level: "warn")
+            appendLog("请先选择课程或填写课程 URL", level: "warn")
             return
         }
         // 开始新一轮“加载作业”，复位上轮结束标记与结果计数，
@@ -434,6 +514,7 @@ final class AppState {
         displayProgress = 0
         isEngineBusy = true
         homeworks.removeAll()
+        completedHomeworkIds.removeAll()
         appendLog("正在加载作业列表…", level: "info")
         engine.send("load_homeworks", params: ["url": settings.courseURL])
     }
@@ -461,8 +542,58 @@ final class AppState {
         isRunning = true
         stopArmed = false
         cancelStopArmReset()
+        // 把本次选中的作业重置为「处理中」：让它们干净地进入本轮抓取列表，
+        // 避免沿用上一轮遗留的「完成/失败」徽标与进度，直到本轮 status 事件逐个接管。
+        for i in homeworks.indices where selectedHomeworkIDs.contains(homeworks[i].id) {
+            homeworks[i].status = "processing"
+            homeworks[i].progress = 0
+        }
+        runAddHomeworkIDs = selectedHomeworkIDs
         appendLog("开始抓取 \(selectedHomeworkIDs.count) 个作业…", level: "info")
         engine.send("start", params: ["homework_ids": Array(selectedHomeworkIDs)])
+
+        // PDF 依赖预检：开启「保存后自动导出 PDF」但本机无 Word/LibreOffice 时，
+        // 提前弹窗提示（仅提示，不强制关闭设置或阻断抓取）。
+        if settings.autoExportPDF {
+            engine.send("check_pdf_env", params: [:]) { [weak self] reply in
+                guard let self else { return }
+                DispatchQueue.main.async {
+                    let available = (reply.result?["available"] as? NSNumber)?.boolValue ?? true
+                    guard !available else { return }
+                    let reason = (reply.result?["reason"] as? String) ?? "未检测到 PDF 转换环境"
+                    self.appendLog("PDF 导出环境检测：\(reason)，将跳过自动导出 PDF", level: "warn")
+                    self.presentPdfEnvMissingAlert(reason)
+                }
+            }
+        }
+    }
+
+    /// 抓取进行中新增未抓取作业：下发引擎动态队列并入队，同时更新本地选择与行状态。
+    /// 仅接受「本轮尚未下发、未在处理」的新作业；已选/已入队的会被过滤（只允许新增，不允许移除）。
+    func addRunningHomeworks(_ ids: [String]) {
+        guard isRunning else { return }
+        let fresh = ids.filter { !selectedHomeworkIDs.contains($0) && !runAddHomeworkIDs.contains($0) }
+        guard !fresh.isEmpty else { return }
+        let newSet = Set(fresh)
+        selectedHomeworkIDs.formUnion(newSet)
+        runAddHomeworkIDs.formUnion(newSet)
+        // 让新加入的作业置为「处理中」，直到引擎 status 事件逐个接管，避免「看似已选却从未处理」
+        for i in homeworks.indices where newSet.contains(homeworks[i].id) {
+            homeworks[i].status = "processing"
+            homeworks[i].progress = 0
+        }
+        appendLog("运行中加入 \(fresh.count) 个新作业进抓取队列…", level: "info")
+        engine.send("add_homeworks", params: ["homework_ids": fresh])
+    }
+
+    /// 缺少 PDF 转换环境时的模态提示（仅告知，不强制用户安装）。
+    func presentPdfEnvMissingAlert(_ reason: String) {
+        let alert = NSAlert()
+        alert.messageText = "无法自动导出 PDF"
+        alert.informativeText = "\(reason)。\n\n抓取仍会正常完成并保存为 Word，但「保存后自动导出 PDF」将被跳过。\n\n可安装 Microsoft Word 或 LibreOffice 后重新导出。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "知道了")
+        DispatchQueue.main.async { alert.runModal() }
     }
 
     func stopTask() {

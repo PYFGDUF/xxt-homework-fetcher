@@ -175,6 +175,11 @@ final class PythonEngine: NSObject {
         send("login")
     }
 
+    /// 「选课程」：请求引擎从个人空间列取账号课程列表，结果通过 courseList 事件回传。
+    func listCourses() {
+        send("list_courses")
+    }
+
     // MARK: - 读取输出
 
     private func readOut() {

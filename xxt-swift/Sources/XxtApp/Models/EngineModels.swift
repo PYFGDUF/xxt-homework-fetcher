@@ -32,7 +32,7 @@ struct EngineReply {
 /// Python 引擎发回的事件
 struct EngineEvent: Decodable {
     enum Kind: String, Decodable {
-        case log, progress, loginPrompt, loginQr, loginSuccess, homeworkList, homeworkPage, done, error, status, imageFail
+        case log, progress, loginPrompt, loginQr, loginSuccess, homeworkList, homeworkPage, done, error, status, imageFail, courseList
     }
     let kind: Kind
     let value: EngineEventValue
@@ -59,6 +59,7 @@ struct EngineEventValue: Decodable {
     var total: Int?
     var title: String?
     var items: [HomeworkItem]?
+    var courses: [CourseItem]?
     var requestLogin: Bool?
     var success: Bool?
     var outputDir: String?
@@ -71,12 +72,46 @@ struct EngineEventValue: Decodable {
     var failed: Int?
 
     enum CodingKeys: String, CodingKey {
-        case message, level, current, total, title, items, success
+        case message, level, current, total, title, items, courses, success
         case requestLogin = "request_login"
         case outputDir = "output_dir"
         case url, status, installed, failed, overall
         case imageB64 = "image_b64"
         case progress
+    }
+}
+
+/// 课程条目（个人空间课程列表，来自 courseList 事件）
+struct CourseItem: Decodable, Identifiable, Hashable {
+    let url: String
+    var title: String
+    var teacher: String
+    var cover: String   // 真实课程封面缩略图 URL
+    var ended: Bool     // 是否为「课程已结束」的结束课程
+    let courseID: String
+    let clazzID: String
+    let cpi: String
+
+    var id: String { url }
+
+    enum CodingKeys: String, CodingKey {
+        case url, title, teacher, cover
+        case ended
+        case courseID = "courseid"
+        case clazzID = "clazzid"
+        case cpi
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        url = (try? c.decode(String.self, forKey: .url)) ?? ""
+        title = (try? c.decode(String.self, forKey: .title)) ?? ""
+        teacher = (try? c.decode(String.self, forKey: .teacher)) ?? ""
+        cover = (try? c.decode(String.self, forKey: .cover)) ?? ""
+        ended = (try? c.decode(Bool.self, forKey: .ended)) ?? false
+        courseID = (try? c.decode(String.self, forKey: .courseID)) ?? ""
+        clazzID = (try? c.decode(String.self, forKey: .clazzID)) ?? ""
+        cpi = (try? c.decode(String.self, forKey: .cpi)) ?? ""
     }
 }
 

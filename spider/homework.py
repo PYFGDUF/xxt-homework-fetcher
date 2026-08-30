@@ -490,3 +490,155 @@ def collect_all_homeworks(list_frame, on_page=None, initial_homeworks=None) -> l
         print(f"\n[warn] 识别到 {len(all_homeworks)} 个作业，但页面显示总量为 {expected_total}，"
               f"可能存在网络缺漏，建议网络稳定后重新加载作业列表")
     return all_homeworks
+
+
+# =====================================================================
+# 个人空间 -> 课程列表解析（「选课程」功能）
+# 学习通个人空间 i.chaoxing.com/base 的课程列表渲染在嵌套 iframe
+#   https://mooc1-1.chaoxing.com/visit/interaction?s=...
+# 每个课程是一个 li.course.clearfix，内含真实课程入口链接
+#   /mooc-ans/visit/stucoursemiddle?courseid=xx&clazzid=xx&cpi=xx&ismooc2=1&v=2
+# =====================================================================
+
+# 个人空间课程列表 iframe 的 URL 特征（域名 + 路径），用于唯一定位
+_PERSONAL_SPACE_IFRAME_KEYWORDS = ("visit/interaction", "stucoursemiddle")
+
+
+def find_course_list_frame(page) -> "object | None":
+    """在个人空间页面中定位课程列表 iframe；找不到返回 None。"""
+    try:
+        for f in page.frames:
+            u = f.url or ""
+            if any(k in u for k in _PERSONAL_SPACE_IFRAME_KEYWORDS):
+                return f
+    except Exception as e:
+        print(f"    [debug] 遍历页面 frame 失败：{e}")
+    return None
+
+
+def extract_course_list(page) -> list:
+    """从个人空间课程列表 iframe 中提取全部课程。
+
+    返回每个课程的字典：{"title", "teacher", "url", "courseid", "clazzid", "cpi"}
+    其中 url 为 stucoursemiddle 课程的完整入口链接（登录会话内可直接访问，
+    会被 302 跳转到带 enc/t 参数的 mycouse/stu 课程页，供 load_homework_list 复用）。
+    解析不到时返回空列表。较新的英文改版个人空间界面课程入口仍保持经典结构，
+    故按「stucoursemiddle 链接」这一稳定特征定位，不依赖界面语言。
+    """
+    frame = find_course_list_frame(page)
+    if frame is None:
+        print("[warn] 未找到个人空间课程列表 iframe（visit/interaction）")
+        return []
+
+    try:
+        entries = frame.evaluate("""() => {
+            const cards = [];
+            document.querySelectorAll('li.course').forEach(li => {
+                const a = li.querySelector('a[href*="stucoursemiddle"]');
+                if (!a) return;
+                let href = a.href || a.getAttribute('href') || '';
+                if (!/^https?:\\/\\//.test(href)) return;
+                // 标题：优先 .course-name，兜底整卡文本
+                const nameEl = li.querySelector('.course-name');
+                let title = nameEl ? (nameEl.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 120) : '';
+                if (!title) {
+                    const mm = li.querySelector('h3, .course-info');
+                    if (mm) title = (mm.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 120);
+                }
+                // 真实封面缩略图：官方卡片里 <img> 本身通常带 course-cover 类（无外层包裹），
+                // 也可能用 div.course-cover > img，或懒加载 data-original/data-src。
+                // 依次按「class 含 cover / 图床路径特征 / 卡内首张主图」兜底命中。
+                let cover = '';
+                const imgs = li.querySelectorAll('img');
+                for (let i = 0; i < imgs.length; i++) {
+                    const img = imgs[i];
+                    const src = (img.currentSrc || img.getAttribute('src') ||
+                                 img.getAttribute('data-original') || img.getAttribute('data-src') || '').trim();
+                    if (!src) continue;
+                    const cls = (img.className || '').toString().toLowerCase();
+                    if (cls.indexOf('cover') !== -1 || src.indexOf('ananas') !== -1 ||
+                        /_130c|240_130|140_80/.test(src)) {
+                        cover = src;
+                        break;
+                    }
+                }
+                if (!cover && imgs.length) {
+                    cover = (imgs[0].currentSrc || imgs[0].getAttribute('src') ||
+                             imgs[0].getAttribute('data-src') || '').trim();
+                }
+                // 教师：官方卡片通常在 .course-info 里（形如「杨乔东」）
+                let teacher = '';
+                const ps = li.querySelectorAll('.course-info p');
+                if (ps.length) {
+                    const last = ps[ps.length - 1];
+                    teacher = (last.getAttribute('title') || (last.innerText || '')).trim().replace(/\\s+/g, ' ');
+                }
+                if (!teacher) {
+                    const infoEl = li.querySelector('.course-info');
+                    if (infoEl) {
+                        teacher = (infoEl.innerText || '').trim().replace(/\\s+/g, ' ');
+                    }
+                }
+                if (title.includes('已修') || title.includes('Public') || title.includes('Library')
+                    || title.includes('Index') || title.includes('Notes')) return;
+                // 「课程已结束」：整卡文本含该标记或 class 含 end 即视为已结束课程
+                const cardText = (li.innerText || '');
+                const ended = cardText.includes('课程已结束')
+                    || (li.className || '').toLowerCase().indexOf('end') !== -1
+                    || !!li.querySelector('[class*="end"]');
+                cards.push({href, title, teacher, cover, ended});
+            });
+            return cards;
+        }""")
+    except Exception as e:
+        print(f"    [warn] 提取课程列表失败：{e}")
+        return []
+
+    courses = []
+    seen = set()
+    for en in entries:
+        href = (en.get("href") or "").strip()
+        title = (en.get("title") or "").strip()
+        # 课程入口链接需要能进入课程页；过滤纯 JS 空链与明显非课程入口
+        if not href or not href.startswith("http") or "stucoursemiddle" not in href:
+            continue
+        if not title:
+            title = href
+        cover = (en.get("cover") or "").strip()
+        if cover and not cover.startswith("http"):
+            cover = urljoin(frame.url, cover)
+        teacher = (en.get("teacher") or "").strip()
+        # 去重：同一 courseid+clazzid 视为同一课程
+        cid = _parse_course_param(href, "courseid")
+        clazz = _parse_course_param(href, "clazzid")
+        key = (cid or title, clazz or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        courses.append({
+            "title": title,
+            "teacher": teacher,
+            "cover": cover,
+            "url": href,
+            "courseid": cid,
+            "clazzid": clazz,
+            "cpi": _parse_course_param(href, "cpi"),
+            "ended": bool(en.get("ended")),
+        })
+
+    if not courses:
+        print("[warn] 未在个人空间识别到课程列表")
+    else:
+        print(f"[info] 已识别 {len(courses)} 门课程")
+    return courses
+
+
+def _parse_course_param(href: str, key: str) -> str:
+    """从 stucoursemiddle 链接中解析 query 参数（courseid/clazzid/cpi）。"""
+    try:
+        from urllib.parse import parse_qs, urlsplit
+        q = parse_qs(urlsplit(href).query)
+        v = q.get(key, [""])[0]
+        return str(v) if v else ""
+    except Exception:
+        return ""
