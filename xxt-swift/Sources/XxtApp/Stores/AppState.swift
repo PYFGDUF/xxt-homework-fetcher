@@ -3,13 +3,6 @@ import SwiftUI
 import AppKit
 import UserNotifications
 
-/// v2.0 界面模式：焕新界面 / 经典界面（老 UI）
-enum AppUIMode: String, CaseIterable, Identifiable {
-    case huanxin = "焕新界面"
-    case classic = "经典界面"
-    var id: String { rawValue }
-}
-
 @Observable
 final class AppState {
     // 引擎
@@ -93,11 +86,6 @@ final class AppState {
     private var fetchStarted = false
     /// 当前生效主题（固定为「活力靛蓝」，不再提供切换入口）
     var theme: AppTheme { AppTheme.indigo }
-
-    // v2.0 界面模式（焕新 / 经典），本地持久化
-    var uiMode: AppUIMode {
-        didSet { UserDefaults.standard.set(uiMode.rawValue, forKey: "uiMode") }
-    }
 
     // 抓取完成提示偏好（纯 UI 侧，本地持久化，不同步 Python）
     var playSoundOnComplete: Bool
@@ -202,7 +190,6 @@ final class AppState {
     }
 
     init() {
-        uiMode = AppUIMode(rawValue: UserDefaults.standard.string(forKey: "uiMode") ?? "") ?? .huanxin
         playSoundOnComplete = UserDefaults.standard.object(forKey: "playSoundOnComplete") as? Bool ?? true
         notifyOnComplete = UserDefaults.standard.object(forKey: "notifyOnComplete") as? Bool ?? true
         engine.onEvent = { [weak self] event in

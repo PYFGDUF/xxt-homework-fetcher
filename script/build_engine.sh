@@ -47,13 +47,31 @@ echo "==> 安装依赖 (requirements.txt + PyInstaller + playwright==${PW_PIN})"
 
 # ---- 3. 确保对应 Playwright 的 Chromium 浏览器已就位 ----
 # 默认装入 ~/Library/Caches/ms-playwright（build_and_run.sh 内嵌时也从这里读取）。
-echo "==> 确保 Chromium 浏览器就位（网络缺失时可忽略此步）"
-(cd "$PROJECT_DIR" && "$VENV_PY" -m playwright install chromium chromium-headless-shell) || true
+# 引擎只需 headless shell（内嵌版本），无需完整 Chromium——
+# 加载完整 chromium 会在联网环境下多下载 160MiB+ 且网络不稳时反复重试导致构建卡死。
+echo "==> 确保 Chromium headless shell 浏览器就位（网络缺失时可忽略此步）"
+(cd "$PROJECT_DIR" && "$VENV_PY" -m playwright install chromium-headless-shell) || true
 
 # ---- 4. 用 spec 打包引擎 ----
 echo "==> PyInstaller 打包引擎 (engine_xxt.spec)"
 (cd "$PROJECT_DIR" && "$VENV_PY" -m PyInstaller engine_xxt.spec \
     --distpath "$DIST" --workpath "$WORK" --noconfirm)
+
+# ---- 4.1 交付瘦身：裁剪 babel 多余 locale 数据 ----
+# babel（docxcompose 的依赖）自带的 locale-data 约 31M，本引擎合并路径并不使用
+# （docxcompose 仅在 Composer.__init__ 构造 CustomProperties，不调用 update_all()，
+#  合并的文档自身也不含 DOCPROPERTY 字段，实测删掉后合并单测全部通过）。
+# 采取确定性删除（产物层面硬删，不受 PyInstaller 内部 datas 归并影响），
+# 仅保留 root/en/zh 三个最小 locale 作为日期格式化兜底（约几百 KB）。
+LOCALE_DIR="$DIST/engine_xxt/_internal/babel/locale-data"
+if [ -d "$LOCALE_DIR" ]; then
+    find "$LOCALE_DIR" -type f \
+        ! -name 'root.dat' ! -name 'en.dat' ! -name 'zh.dat' \
+        ! -name 'LICENSE.unicode' -delete
+    find "$LOCALE_DIR" -type d -empty -delete
+    echo "==> 已裁剪 babel 多余 locale 数据，剩余:"
+    du -sh "$LOCALE_DIR"
+fi
 
 echo "==> 完成: $DIST/engine_xxt"
 du -sh "$DIST/engine_xxt"

@@ -35,13 +35,7 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        Group {
-            if app.uiMode == .huanxin {
-                huanxinBody
-            } else {
-                classicBody
-            }
-        }
+        huanxinBody
         .frame(minWidth: 430, maxWidth: 540, minHeight: 400)
         // 每次打开设置窗口都居中显示：macOS 默认会记住窗口上次位置，
         // 通过取到所属 NSWindow 并 center() 强制回到屏幕中央。
@@ -63,77 +57,6 @@ struct SettingsView: View {
                                   concurrencyEnabled: s.concurrencyEnabled,
                                   concurrencyWorkers: s.concurrencyWorkers)
             storage = app.storageUsage()
-        }
-    }
-
-    // MARK: - 经典界面：系统标准 TabView + Form(.grouped)
-
-    private var classicBody: some View {
-        TabView {
-            Form {
-                Section("输出") {
-                    HStack {
-                        TextField("输出目录", text: $draft.outputDir)
-                        chooseDirButton
-                    }
-                }
-
-                Section("外观") {
-                    Picker("外观", selection: $draft.appearance) {
-                        Text("跟随系统").tag("system")
-                        Text("浅色").tag("light")
-                        Text("深色").tag("dark")
-                    }
-                    .pickerStyle(.segmented)
-                }
-
-                Section {
-                    LabeledContent("总占用") { Text(app.formatBytes(storage.totalBytes)).foregroundStyle(app.theme.primary) }
-                    LabeledContent("Word") { Text(app.formatBytes(storage.wordBytes)) }
-                    LabeledContent("图片") { Text(app.formatBytes(storage.imageBytes)) }
-                    LabeledContent("PDF") { Text(app.formatBytes(storage.pdfBytes)) }
-                    LabeledContent("其他") { Text(app.formatBytes(storage.otherBytes)) }
-                    LabeledContent("课程输出目录") { Text("\(storage.runCount) 个") }
-                    Button(role: .destructive) {
-                        confirmCleanup()
-                    } label: {
-                        Label("一键清理", systemImage: "trash")
-                    }
-                    .disabled(storage.isEmpty)
-                    .help("删除输出目录下所有已生成的课程输出与 debug 文件夹")
-                } header: {
-                    Text("存储空间")
-                } footer: {
-                    Text("删除后不可恢复")
-                }
-            }
-            .formStyle(.grouped)
-            .tabItem { Label("通用", systemImage: "gearshape") }
-
-            Form {
-                Section("选项") {
-                    Toggle("保存后自动导出 PDF", isOn: $draft.autoExportPDF)
-                    Toggle("强制重新抓取已完成的作业", isOn: $draft.forceRegrab)
-                    Toggle("抓取完成后自动打开输出目录", isOn: $draft.openDirOnComplete)
-                    Toggle("抓取完成后播放提示音", isOn: $draft.playSoundOnComplete)
-                    Toggle("抓取完成后发送系统通知", isOn: $draft.notifyOnComplete)
-                    Toggle("文档中展示来源 URL", isOn: $draft.showSourceURL)
-                }
-
-                Section("实验室") {
-                    labContent
-                }
-
-                Section("登录") {
-                    loginRow
-                }
-            }
-            .formStyle(.grouped)
-            .tabItem { Label("选项", systemImage: "slider.horizontal.3") }
-        }
-        // 底部操作带：取消/保存，沿用系统 grouped 表单的工具栏区域形态
-        .safeAreaInset(edge: .bottom) {
-            bottomBar
         }
     }
 
@@ -463,7 +386,7 @@ struct SettingsView: View {
                 .help("发起扫码登录学习通，登录成功后可开始抓取作业")
             }
         }
-        .brandButtonStyle(active: app.uiMode == .huanxin, theme: app.theme)
+        .brandButtonStyle(theme: app.theme)
     }
 
     // MARK: - 复用 UI 片段
@@ -491,18 +414,26 @@ struct SettingsView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 11) {
-                IconBadge(symbol: icon, tint: app.theme.primary, soft: app.theme.primary.opacity(0.12))
-                VStack(alignment: .leading, spacing: 2) {
+            // 卡片头即标题：去掉与下方设置开关行同款的大号图标徽标块，避免「行式」观感。
+            // 改用小号主题色图标 + .title2 粗体标题，从排布和字号双层面上与 .body 级设置项拉开层级。
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(app.theme.primary)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 3) {
                     Text(title)
-                        .font(.body.weight(.semibold))
+                        .font(.title2.weight(.bold))
                     Text(subtitle)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.bottom, 18)
+            .padding(.bottom, 16)
+
+            Divider()
+                .padding(.bottom, 14)
 
             content()
         }
@@ -556,25 +487,25 @@ struct SettingsView: View {
         } label: {
             Text("选择…")
         }
-        .outlineButtonStyle(active: app.uiMode == .huanxin, theme: app.theme)
+        .outlineButtonStyle(theme: app.theme)
     }
 
     private var bottomBar: some View {
         HStack {
             Spacer()
             Button("取消") { dismiss() }
-                .outlineButtonStyle(active: app.uiMode == .huanxin, theme: app.theme)
+                .outlineButtonStyle(theme: app.theme)
             Button("保存") {
                 writeBack()
                 app.saveSettings()
                 dismiss()
             }
-            .brandButtonStyle(active: app.uiMode == .huanxin, theme: app.theme)
+            .brandButtonStyle(theme: app.theme)
             .keyboardShortcut(.defaultAction)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .background(app.uiMode == .huanxin ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.bar))
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     // MARK: - 保存

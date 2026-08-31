@@ -58,14 +58,14 @@ struct ConfirmLogoutView: View {
             Button("取消") {
                 isPresented = false
             }
-            .outlineButtonStyle(active: app.uiMode == .huanxin, theme: app.theme)
+            .outlineButtonStyle(theme: app.theme)
 
             Button("退出登录") {
                 isPresented = false
                 app.logout()
                 dismiss()
             }
-            .brandButtonStyle(active: app.uiMode == .huanxin, theme: app.theme)
+            .brandButtonStyle(theme: app.theme)
         }
         .padding(.top, 4)
     }

@@ -9,7 +9,7 @@ DIST_DIR="$PROJECT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 # 版本号（版本信息单一来源）：变更只改这里，会写进 Info.plist 并纳入指纹触发重新组装，
 # Swift 侧通过 VersionService 从 Info.plist 读取，二者不再多源。
-MARKETING_VERSION="2.3beta"
+MARKETING_VERSION="2.4beta"
 APP_TITLE="学习通作业爬取工具"
 BUNDLE_INFO="$APP_TITLE v$MARKETING_VERSION"
 # 全局可覆盖：调用方显式指定 DEVELOPER_DIR 时优先采用，否则自动探测。
@@ -82,11 +82,15 @@ fi
 # 引擎 + 内置浏览器纳入指纹。自包含引擎（PyInstaller 二进制）与 ms-playwright 浏览器是
 # 打进 .app 的运行时资源；若不纳入指纹，仅更换引擎/浏览器时二进制未变会导致 SKIP_ASSEMBLE
 # 跳过重新组装/重签，分发到其他 Mac 后因缺浏览器而无法抓取。
-# 用“引擎可执行哈希 + 各浏览器目录修改时间”作为轻量但可靠的资源指纹。
+# 用“引擎可执行哈希 + _internal 数据指纹 + 各浏览器目录修改时间”作为轻量但可靠的资源指纹。
+# _internal 数据指纹：PyInstaller 的 bootloader（engine_xxt 可执行）不会随 _internal 数据变化，
+# 但引擎裁剪/依赖变动都落在 _internal。故对 _internal 下所有文件按 (大小+修改时间+路径) 排序取哈希，
+# 只要引擎数据增删改，指纹即变化，强制下一次组装/重签（避免出现“只改 _internal 未触发重装”的漏发）。
 ENGINE_SRC_ROOT="$PROJECT_DIR/../build/engine-pkg/dist/engine_xxt"
 ENGINE_FP=""
 if [ -x "$ENGINE_SRC_ROOT/engine_xxt" ]; then
     ENGINE_MARKER="$(shasum -a 256 "$ENGINE_SRC_ROOT/engine_xxt" | awk '{print $1}')"
+    ENGINE_INTERNAL_FP="$(find "$ENGINE_SRC_ROOT/_internal" -type f -print0 2>/dev/null | sort -z | xargs -0 stat -f '%z %m %N' 2>/dev/null | shasum -a 256 | awk '{print $1}')"
     MS_MARKER=""
     for b in chromium_headless_shell-1223 ffmpeg-1011; do
         d="$HOME/Library/Caches/ms-playwright/$b"
@@ -94,7 +98,7 @@ if [ -x "$ENGINE_SRC_ROOT/engine_xxt" ]; then
             MS_MARKER="${MS_MARKER}${b}:$(stat -f %m "$d");"
         fi
     done
-    ENGINE_FP="${ENGINE_MARKER}${MS_MARKER}"
+    ENGINE_FP="${ENGINE_MARKER}|${ENGINE_INTERNAL_FP}|${MS_MARKER}"
 fi
 # 二进制 + 图标 + 引擎/浏览器 + 版本信息 合并指纹；任一发生变化都会触发重新组装/重签
 VERSION_FP="$(printf '%s|%s|%s' "$MARKETING_VERSION" "$APP_TITLE" "$BUNDLE_INFO" | shasum -a 256 | awk '{print $1}')"
@@ -163,6 +167,9 @@ fi
 # 使 App 不依赖本机 Python/浏览器，可分发到其他 Mac 离线运行。
 ENGINE_SRC="$PROJECT_DIR/../build/engine-pkg/dist/engine_xxt"
 if [ -d "$ENGINE_SRC" ]; then
+    # 先清空目标引擎目录再拷贝：cp 不与旧内容合并（否则旧引擎里已删的
+    # 文件——如裁剪掉的 babel locale 数据——会残留叠加，导致 App 体积不降反而累积）。
+    rm -rf "$APP_BUNDLE/Contents/Resources/engine_xxt"
     mkdir -p "$APP_BUNDLE/Contents/Resources/engine_xxt"
     cp -R "$ENGINE_SRC/." "$APP_BUNDLE/Contents/Resources/engine_xxt/"
     # 剔除引擎运行时产物（progress.json / logs），防止残留在 Bundle 内被运行改写的封印破坏

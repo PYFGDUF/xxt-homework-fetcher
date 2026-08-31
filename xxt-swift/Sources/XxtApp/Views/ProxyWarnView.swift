@@ -76,7 +76,7 @@ struct ProxyWarnView: View {
             Button("我知道了") {
                 app.showProxyAlert = false
             }
-            .brandButtonStyle(active: app.uiMode == .huanxin, theme: app.theme)
+            .brandButtonStyle(theme: app.theme)
             .frame(width: 200)
         }
         .padding(.top, 4)

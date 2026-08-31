@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."   # 切到 xxt-swift 目录
 
 APP="dist/XxtApp.app"
 VOLNAME="学习通作业爬取工具"
-DMG="dist/学习通作业爬取工具-2.3-beta.dmg"
+DMG="dist/学习通作业爬取工具-2.4-beta.dmg"
 MOUNT="/Volumes/$VOLNAME"
 
 if [ ! -d "$APP" ]; then

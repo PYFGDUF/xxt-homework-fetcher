@@ -386,7 +386,7 @@ struct HuanxinView: View {
                     .frame(minWidth: 150)
                     .padding(.vertical, 3)
             }
-            .outlineButtonStyle(active: app.uiMode == .huanxin, theme: app.theme)
+            .outlineButtonStyle(theme: app.theme)
             .background(
                 RoundedRectangle(cornerRadius: 8)
                     .fill(Color(nsColor: .quaternarySystemFill))
@@ -1780,24 +1780,14 @@ extension ButtonStyle where Self == MinimalOutlineButtonStyle {
 }
 
 extension View {
-    /// 主按钮样式：焕新用主题色填充，经典沿用系统 borderedProminent。
-    @ViewBuilder
-    func brandButtonStyle(active: Bool, theme: AppTheme) -> some View {
-        if active {
-            self.buttonStyle(.minimalBrand(theme: theme))
-        } else {
-            self.buttonStyle(.borderedProminent)
-        }
+    /// 主按钮样式：主题色填充。
+    func brandButtonStyle(theme: AppTheme) -> some View {
+        self.buttonStyle(.minimalBrand(theme: theme))
     }
 
-    /// 次要描边按钮样式：焕新用主题色描边，经典沿用系统 bordered。
-    @ViewBuilder
-    func outlineButtonStyle(active: Bool, theme: AppTheme) -> some View {
-        if active {
-            self.buttonStyle(.minimalOutline(theme: theme))
-        } else {
-            self.buttonStyle(.bordered)
-        }
+    /// 次要描边按钮样式：主题色描边。
+    func outlineButtonStyle(theme: AppTheme) -> some View {
+        self.buttonStyle(.minimalOutline(theme: theme))
     }
 }
 

@@ -107,12 +107,12 @@ struct LoginPromptView: View {
             Button("取消登录") {
                 app.cancelLogin()
             }
-            .outlineButtonStyle(active: app.uiMode == .huanxin, theme: app.theme)
+            .outlineButtonStyle(theme: app.theme)
 
             Button("已完成登录") {
                 app.loginDone()
             }
-            .brandButtonStyle(active: app.uiMode == .huanxin, theme: app.theme)
+            .brandButtonStyle(theme: app.theme)
             .disabled(app.isVerifyingLogin)
         }
         .padding(.top, 4)
