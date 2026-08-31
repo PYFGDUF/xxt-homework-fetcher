@@ -6,16 +6,17 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import traceback
 
 from playwright.sync_api import sync_playwright
 
 from core.active_queue import (
-    active_get_homework,
+    active_claim_index,
+    active_claim_next,
     active_queue_length,
     clear_active_queue,
-    mark_active_done,
     register_active_homeworks,
 )
 from core.config import (
@@ -28,7 +29,9 @@ from core.config import (
     emit_login_qr,
     emit_login_success,
     ensure_dirs,
+    force_stop,
     get_auto_export_pdf,
+    get_concurrency,
     get_course_url,
     get_force_regrab,
     get_headless,
@@ -39,6 +42,8 @@ from core.config import (
     get_reusable_page,
     load_state,
     output_dir,
+    bump_done_count,
+    reset_done_count,
     reset_login_event,
     reset_login_cancel,
     is_login_cancelled,
@@ -620,6 +625,238 @@ def _wait_for_active_growth(index: int, patience: float = 2.0) -> bool:
     return active_queue_length() > index
 
 
+# 每线程刷新浏览器内部计数/日志标签的辅助
+_worker_counter_lock = threading.Lock()
+_worker_counter = 0
+
+
+def _next_worker_id() -> int:
+    global _worker_counter
+    with _worker_counter_lock:
+        _worker_counter += 1
+        return _worker_counter
+
+
+def _launch_worker_browser(playwright_obj):
+    """worker 线程自建独立的浏览器/上下文/page（不与主线程复用，避免 greenlet 跨线程）。
+
+    与 _get_browser_context_page 不同：不使用 GUI 登录阶段保留的可复用浏览器（那属于
+    主线程 greenlet），每个 worker 一律新建自己的浏览器实例，并复用登录态 storage_state。
+    """
+    headless = get_headless()
+    browser = playwright_obj.chromium.launch(
+        headless=headless,
+        args=["--disable-blink-features=AutomationControlled"],
+    )
+    context_args = {
+        "viewport": {"width": 1280, "height": 800},
+        "user_agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        ),
+    }
+    state = load_state()
+    cookies = load_cookies()
+    if state:
+        context = browser.new_context(storage_state=state, **context_args)
+    else:
+        context = browser.new_context(**context_args)
+    if cookies and not state:
+        context.add_cookies(cookies)
+    page = context.new_page()
+    return browser, context, page
+
+
+def _process_homework(wid: int, hw: dict, idx: int, total_count: int,
+                      wk_ctx, wk_page, list_frame, tracker) -> bool:
+    """处理单个作业：打开→抓题→保存→上报状态。
+
+    返回 True 表示检测到登录态失效，应终止本次抓取；否则返回 False。
+    wk_ctx/wk_page：本 worker 自建上下文与页面；list_frame：自动模式的课程级列表
+    frame（worker 模式下为 None，走 _open_item_list 自建列表上下文）。
+    """
+    tag = f"W{wid}]"
+    print(f"[{tag} 完成信号前置] 正在抓取：{hw['title']}")
+    # 记录当前作业上下文，供单作业进度实时映射为总进度（与 progress 事件联动）
+    set_active_homework(idx, total_count)
+    # 单作业进度：开始处理时上报 in_progress 并清零（GUI 行级从 0% 起）
+    _report_status(hw.get("url", ""), hw["title"], "in_progress", progress=0.0)
+
+    new_page = None
+    try:
+        # 回到该作业所在列表页，保持上下文一致（仅供自动模式使用；worker 下 list_frame 为 None）
+        if list_frame is not None:
+            list_url = hw.get("list_url", list_frame.url)
+            if list_url and list_frame.url != list_url:
+                try:
+                    list_frame.goto(list_url)
+                    wait_for_iframe_content(list_frame, 10_000)
+                    scroll_frame_to_bottom(list_frame)
+                    time.sleep(0.5)
+                except Exception as e:
+                    print(f"    [warn] 返回列表页失败：{e}")
+
+        target_url = hw.get("url", "")
+        # 如果识别到是智能分析 URL，强制置空
+        if target_url and is_insight_link(target_url, hw["title"]):
+            print(f"    [warn] 过滤掉智能分析链接：{target_url}")
+            target_url = ""
+
+        # —— 打开作业（含自动重试 + 登录失效检测）——
+        def _try_open(attempt: int):
+            if target_url:
+                print(f"    新标签页打开：{target_url}（第 {attempt}/{OPEN_HOMEWORK_RETRIES + 1} 次）")
+                np = wk_ctx.new_page()
+                try:
+                    np.goto(target_url, wait_until="domcontentloaded", timeout=WAIT_TIMEOUT)
+                    wait_stable(np, 4000)
+                except Exception as e:
+                    print(f"    [warn] 打开失败：{e}")
+                    try:
+                        np.close()
+                    except Exception:
+                        pass
+                    return None, ""
+                return np, target_url
+            # 点击进入
+            entry = list_frame if list_frame is not None else _open_item_list(wk_ctx, wk_page, hw)
+            if entry is None:
+                return None, ""
+            np = click_homework_item(wk_ctx, entry, hw["title"])
+            if not np:
+                return None, ""
+            return np, np.url
+
+        new_page = None
+        save_url = ""
+        for attempt in range(1, OPEN_HOMEWORK_RETRIES + 2):
+            new_page, save_url = _try_open(attempt)
+            if new_page:
+                break
+            print(f"    [warn] 打开作业失败（第 {attempt} 次）")
+            if attempt > OPEN_HOMEWORK_RETRIES:
+                break
+            time.sleep(1.0)
+
+        if not new_page:
+            print("    无法打开作业，跳过")
+            tracker.set(hw.get("url", ""), hw["title"], "failed")
+            _report_status(hw.get("url", ""), hw["title"], "failed")
+            return False
+
+        # 登录失效检测：作业页若被重定向回登录页，说明登录态已过期
+        if is_login_page(new_page):
+            print("\n[error] 检测到登录态已失效（作业页被重定向到登录页），停止抓取。")
+            print("[info] 请到设置中重新「登录学习通」，再继续抓取。")
+            debug_screenshot(new_page, "login_expired")
+            tracker.set(hw.get("url", ""), hw["title"], "failed")
+            _report_status(hw.get("url", ""), hw["title"], "failed")
+            return True
+
+        # 单作业超时：取当前时刻 + 预算，交给题目翻页阶段提前截断
+        hw_deadline = time.time() + SINGLE_HOMEWORK_TIMEOUT_SEC
+        questions = extract_all_questions(new_page, title=hw.get("title", ""), url=hw.get("url", ""),
+                                          deadline=hw_deadline)
+
+        if questions:
+            hw_url = hw.get("url", "")
+            _report_status(hw_url, hw["title"], "in_progress", progress=0.95)
+            docx_path = save_homework(
+                hw["title"],
+                save_url,
+                questions,
+                progress_cb=lambda done, total: _report_status(
+                    hw_url, hw["title"], "in_progress",
+                    progress=min(0.999, 0.95 + 0.049 * (done / max(total, 1))),
+                ),
+            )
+            if docx_path:
+                tracker.set(hw.get("url", ""), hw["title"], "completed",
+                            output_dir=output_dir(), word_file=docx_path)
+                _report_status(hw.get("url", ""), hw["title"], "completed")
+            else:
+                tracker.set(hw.get("url", ""), hw["title"], "failed")
+                _report_status(hw.get("url", ""), hw["title"], "failed")
+        else:
+            print("    未抓到任何题目，保存 debug 后关闭标签页")
+            debug_screenshot(new_page, hw["title"])
+            tracker.set(hw.get("url", ""), hw["title"], "failed")
+            _report_status(hw.get("url", ""), hw["title"], "failed")
+
+    except Exception as e:
+        print(f"    [error] 抓取失败: {e}")
+        traceback.print_exc()
+        tracker.set(hw.get("url", ""), hw["title"], "failed")
+        _report_status(hw.get("url", ""), hw["title"], "failed")
+        if new_page:
+            debug_screenshot(new_page, hw["title"] + "_error")
+        elif list_frame is not None:
+            debug_screenshot(list_frame, hw["title"] + "_error")
+
+    finally:
+        # 及时关闭新标签页释放内存
+        if new_page:
+            try:
+                new_page.close()
+                print("    已关闭新标签页")
+            except Exception:
+                pass
+        # 清理当前 worker 上下文中残留的其他页面/弹窗
+        try:
+            for pg in wk_ctx.pages:
+                if pg != wk_page and not pg.is_closed():
+                    pg.close()
+        except Exception:
+            pass
+
+    # 本作业处理完毕（成功或失败），再上报进度
+    done = bump_done_count()
+    _report_progress(done, max(total_count, active_queue_length()), hw["title"])
+    return False
+
+
+def _worker_run(wid: int, tracker: ProgressTracker):
+    """单个 worker 线程：自建浏览器，从线程安全队列领取作业并逐个处理。"""
+    pw_obj = browser = context = None
+    page = None
+    try:
+        pw_obj = sync_playwright().start()
+        browser, context, page = _launch_worker_browser(pw_obj)
+        print(f"[info] worker-{wid} 浏览器已就绪（headless={get_headless()}）")
+        while True:
+            if should_stop():
+                print(f"[info] worker-{wid} 收到停止信号，退出")
+                break
+            hw, idx, qlen = active_claim_next()
+            if hw is None:
+                # 队列到底：短等待运行中新增作业，避免误判为已全部处理
+                if not _wait_for_active_growth(active_claim_index(), 2.0):
+                    break
+                continue
+            fatal = _process_homework(wid, hw, idx, max(qlen, active_queue_length()),
+                                     context, page, None, tracker)
+            if fatal:
+                print("[info] 检测到登录态失效，通知所有 worker 停止")
+                force_stop()
+                break
+            # worker 之间短暂错峰，避免同时突增并发请求
+            time.sleep(0.3)
+    except Exception as e:
+        print(f"[error] worker-{wid} 异常退出：{e!r}")
+        traceback.print_exc()
+    finally:
+        # 各 worker 在自己的 greenlet 内关闭自建浏览器
+        for obj in (page, context, browser, pw_obj):
+            if obj:
+                try:
+                    if hasattr(obj, "close"):
+                        obj.close()
+                    elif hasattr(obj, "stop"):
+                        obj.stop()
+                except Exception:
+                    pass
+
+
 @with_logging
 def run(selected_homeworks: list = None, interactive: bool = True):
     """
@@ -749,169 +986,33 @@ def run(selected_homeworks: list = None, interactive: bool = True):
             clear_active_queue()
             return
 
-        idx = 0
-        while True:
-            if should_stop():
-                print("\n[info] 收到停止信号，中断抓取")
-                break
-            # 队列迭代到尾部：短暂等待运行中新增作业，避免误判为「已全部处理」而提前结束
-            if idx >= active_queue_length():
-                if not _wait_for_active_growth(idx, 2.0):
-                    break
-                total_count = active_queue_length()
-                continue
-            hw = active_get_homework(idx)
-            idx += 1
-            total_count = max(total_count, active_queue_length())
-            mark_active_done(hw)
+        # —— worker 化抓取：主线程的浏览器仅用于列表/登录，实际抓取交给 N 个独立
+        #    worker 线程，每个 worker 自建 playwright/浏览器/context（规避 greenlet 跨线程）。
+        #    队列由 active_claim_next() 原子领取，进度用 bump_done_count() 线程安全累加。 ——
+        reset_done_count()
+        conc = max(1, int(get_concurrency()))
+        print(f"[info] 采用 {conc} 个并行 worker 抓取，每个 worker 独立浏览器实例")
 
-            print(f"[{idx}/{total_count}] 正在抓取：{hw['title']}")
-            # 记录当前作业上下文，供单作业进度实时映射为总进度（与 progress 事件联动）
-            set_active_homework(idx, total_count)
-            # 单作业进度：开始处理时上报 in_progress 并清零（GUI 行级从 0% 起）
-            _report_status(hw.get("url", ""), hw["title"], "in_progress", progress=0.0)
-
-            new_page = None
-            save_url = ""
-            try:
-                # 回到该作业所在列表页，保持上下文一致（自动模式才有课程级 list_frame）
-                if list_frame is not None:
-                    list_url = hw.get("list_url", list_frame.url)
-                    if list_url and list_frame.url != list_url:
-                        try:
-                            list_frame.goto(list_url)
-                            wait_for_iframe_content(list_frame, 10_000)
-                            scroll_frame_to_bottom(list_frame)
-                            time.sleep(0.5)
-                        except Exception as e:
-                            print(f"    [warn] 返回列表页失败：{e}")
-
-                target_url = hw.get("url", "")
-                # 如果识别到是智能分析 URL，强制置空
-                if target_url and is_insight_link(target_url, hw["title"]):
-                    print(f"    [warn] 过滤掉智能分析链接：{target_url}")
-                    target_url = ""
-
-                # —— 打开作业（含自动重试 + 登录失效检测）——
-                # 单次「打开」尝试：直连 URL 或点击进入；成功则返回 (page, url)，失败返回 (None, "")
-                def _try_open(attempt: int):
-                    if target_url:
-                        print(f"    新标签页打开：{target_url}（第 {attempt}/{OPEN_HOMEWORK_RETRIES + 1} 次）")
-                        np = context.new_page()
-                        try:
-                            np.goto(target_url, wait_until="domcontentloaded", timeout=WAIT_TIMEOUT)
-                            wait_stable(np, 4000)
-                        except Exception as e:
-                            print(f"    [warn] 打开失败：{e}")
-                            try:
-                                np.close()
-                            except Exception:
-                                pass
-                            return None, ""
-                        return np, target_url
-                    # 点击进入
-                    entry = list_frame if list_frame is not None else _open_item_list(context, page, hw)
-                    if entry is None:
-                        return None, ""
-                    np = click_homework_item(context, entry, hw["title"])
-                    if not np:
-                        return None, ""
-                    return np, np.url
-
-                new_page = None
-                save_url = ""
-                for attempt in range(1, OPEN_HOMEWORK_RETRIES + 2):
-                    new_page, save_url = _try_open(attempt)
-                    if new_page:
-                        break
-                    print(f"    [warn] 打开作业失败（第 {attempt} 次）")
-                    # 到达最后一次仍失败则标记作业失败
-                    if attempt > OPEN_HOMEWORK_RETRIES:
-                        break
-                    time.sleep(1.0)
-
-                if not new_page:
-                    print("    无法打开作业，跳过")
-                    tracker.set(hw.get("url", ""), hw["title"], "failed")
-                    _report_status(hw.get("url", ""), hw["title"], "failed")
-                    _report_progress(idx, total_count, hw["title"])
-                    continue
-
-                # 登录失效检测：作业页若被重定向回登录页，说明登录态已过期
-                if is_login_page(new_page):
-                    print("\n[error] 检测到登录态已失效（作业页被重定向到登录页），停止抓取。")
-                    print("[info] 请到设置中重新「登录学习通」，再继续抓取。")
-                    debug_screenshot(new_page, "login_expired")
-                    tracker.set(hw.get("url", ""), hw["title"], "failed")
-                    _report_status(hw.get("url", ""), hw["title"], "failed")
-                    _report_progress(idx, total_count, hw["title"])
-                    # 打断后续作业（整门课都会因掉登录而抓不到），进入合并收尾
-                    break
-
-                # 单作业超时：取当前时刻 + 预算，交给题目翻页阶段提前截断
-                hw_deadline = time.time() + SINGLE_HOMEWORK_TIMEOUT_SEC
-                questions = extract_all_questions(new_page, title=hw.get("title", ""), url=hw.get("url", ""),
-                                                  deadline=hw_deadline)
-
-                if questions:
-                    # 题目抓取完成、进入保存阶段：基准进度置 0.95，图片下载再逐张推进到 ~0.999（completed 时在 GUI 置满）
-                    hw_url = hw.get("url", "")
-                    _report_status(hw_url, hw["title"], "in_progress", progress=0.95)
-                    docx_path = save_homework(
-                        hw["title"],
-                        save_url,
-                        questions,
-                        progress_cb=lambda done, total: _report_status(
-                            hw_url, hw["title"], "in_progress",
-                            progress=min(0.999, 0.95 + 0.049 * (done / max(total, 1))),
-                        ),
-                    )
-                    if docx_path:
-                        tracker.set(hw.get("url", ""), hw["title"], "completed",
-                                    output_dir=output_dir(), word_file=docx_path)
-                        _report_status(hw.get("url", ""), hw["title"], "completed")
-                    else:
-                        tracker.set(hw.get("url", ""), hw["title"], "failed")
-                        _report_status(hw.get("url", ""), hw["title"], "failed")
-                else:
-                    print("    未抓到任何题目，保存 debug 后关闭标签页")
-                    debug_screenshot(new_page, hw["title"])
-                    tracker.set(hw.get("url", ""), hw["title"], "failed")
-                    _report_status(hw.get("url", ""), hw["title"], "failed")
-
-            except Exception as e:
-                print(f"    [error] 抓取失败: {e}")
-                traceback.print_exc()
-                tracker.set(hw.get("url", ""), hw["title"], "failed")
-                _report_status(hw.get("url", ""), hw["title"], "failed")
-                if new_page:
-                    debug_screenshot(new_page, hw["title"] + "_error")
-                elif list_frame is not None:
-                    debug_screenshot(list_frame, hw["title"] + "_error")
-
-            finally:
-                # 及时关闭新标签页释放内存
-                if new_page:
-                    try:
-                        new_page.close()
-                        print("    已关闭新标签页")
-                    except Exception:
-                        pass
-
-                # 清理上下文中残留的其他页面/弹窗，避免 frame 累积导致后续定位异常
+        # 主浏览器已完成列表/登录使命，先关闭释放内存（worker 各自独立实例，不依赖它）
+        for _obj in (context, browser, playwright_obj):
+            if _obj:
                 try:
-                    for pg in context.pages:
-                        if pg != page and not pg.is_closed():
-                            pg.close()
+                    if hasattr(_obj, "close"):
+                        _obj.close()
+                    elif hasattr(_obj, "stop"):
+                        _obj.stop()
                 except Exception:
                     pass
+        context = browser = playwright_obj = None
 
-            # 本作业处理完毕（成功或失败），再上报进度，
-            # 避免最后一个作业尚未完成时进度就已到 100%
-            _report_progress(idx, total_count, hw["title"])
-
-            # 每个作业之间短暂停顿，避免请求过快
-            time.sleep(0.5)
+        threads = []
+        for i in range(conc):
+            t = threading.Thread(target=_worker_run, args=(i + 1, tracker), daemon=True)
+            threads.append(t)
+            t.start()
+        for t in threads:
+            # 主线程 join 期间不触碰任何 playwright 对象（全部由 worker 网络线程驱动）
+            t.join()
 
         # 合并本次生成的所有 Word 文档
         print("\n正在合并本次生成的 Word 文档...")
@@ -921,9 +1022,10 @@ def run(selected_homeworks: list = None, interactive: bool = True):
         if get_open_dir_on_complete():
             _open_output_dir(output_dir())
 
-        # 最终保存状态
-        save_state(context)
-        print(f"\n浏览器状态已保存到 {STATE_FILE}，下次运行可直接复用。")
+        # 最终保存状态（登录态在登录/列表阶段已落盘；worker 各自独立上下文无需再存）
+        if context is not None:
+            save_state(context)
+            print(f"\n浏览器状态已保存到 {STATE_FILE}，下次运行可直接复用。")
 
     except KeyboardInterrupt:
         print("\n[info] 用户中断运行")

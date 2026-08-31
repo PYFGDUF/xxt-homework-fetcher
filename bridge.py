@@ -233,6 +233,8 @@ def _normalize_settings(raw: dict) -> dict:
         "open_dir_on_complete": config.get_open_dir_on_complete(),
         "show_source_url": config.get_show_source_url(),
         "appearance": _a,
+        "concurrency_enabled": config.get_concurrency_enabled(),
+        "concurrency_workers": config.get_concurrency_workers(),
     }
 
 
@@ -254,6 +256,11 @@ def _apply_settings(s: dict):
         config.set_open_dir_on_complete(bool(s["open_dir_on_complete"]))
     if "show_source_url" in s:
         config.set_show_source_url(bool(s["show_source_url"]))
+    if "concurrency_enabled" in s or "concurrency_workers" in s:
+        config.set_concurrency(
+            bool(s.get("concurrency_enabled", False)),
+            int(s.get("concurrency_workers", config.DEFAULT_CONCURRENCY)),
+        )
     if s.get("appearance") in ("system", "light", "dark"):
         cs.set_appearance(str(s["appearance"]))
 

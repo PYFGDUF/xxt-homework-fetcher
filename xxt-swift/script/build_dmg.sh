@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."   # 切到 xxt-swift 目录
 
 APP="dist/XxtApp.app"
 VOLNAME="学习通作业爬取工具"
-DMG="dist/学习通作业爬取工具-2.0-beta.dmg"
+DMG="dist/学习通作业爬取工具-2.3-beta.dmg"
 MOUNT="/Volumes/$VOLNAME"
 
 if [ ! -d "$APP" ]; then
@@ -246,5 +246,5 @@ if [ "$LAYOUT_OK" = "0" ]; then
     echo ""
     echo "提示：本次 DMG 未固化为带背景的安装画面，但仍可正常拖拽安装。"
     echo "      如需完整安装界面，请授予本终端对 Finder 的自动化权限后重新运行："
-    echo "          cd /Users/pengyufeng/Documents/xxt/xxt-swift && ./script/build_dmg.sh"
+    echo "          cd <你的 xxt-swift 目录> && ./script/build_dmg.sh"
 fi

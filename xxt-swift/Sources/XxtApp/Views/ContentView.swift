@@ -26,6 +26,10 @@ struct ContentView: View {
         .sheet(isPresented: Bindable(app).isLoggingIn, content: {
             LoginPromptView()
         })
+        // 启动时检测到网络代理（VPN 可能影响抓取稳定性）的提示弹窗
+        .sheet(isPresented: Bindable(app).showProxyAlert, content: {
+            ProxyWarnView()
+        })
         // 扫码登录成功提示
         .alert("登录成功", isPresented: Bindable(app).showLoginSuccess) {
             Button("好的", role: .cancel) { }
@@ -208,6 +212,10 @@ struct ContentView: View {
         // 登录阻断层改为 macOS 原生 sheet（非可关闭，避免 Escape 误关）
         .sheet(isPresented: Bindable(app).isLoggingIn, content: {
             LoginPromptView()
+        })
+        // 启动时检测到网络代理（VPN 可能影响抓取稳定性）的提示弹窗
+        .sheet(isPresented: Bindable(app).showProxyAlert, content: {
+            ProxyWarnView()
         })
         // 扫码登录成功提示
         .alert("登录成功", isPresented: Bindable(app).showLoginSuccess) {

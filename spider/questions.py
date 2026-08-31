@@ -29,6 +29,7 @@ def find_question_frame(page: Page):
     try:
         page.wait_for_selector("iframe", timeout=ACTION_TIMEOUT)
     except Exception:
+        print("    [debug] 等待题目 iframe 失败，按当前页面继续")
         pass
 
     frames = page.frames
@@ -63,6 +64,12 @@ def extract_text_with_images(element) -> str:
         text = element.evaluate("""
             el => {
                 const clone = el.cloneNode(true);
+                // 剔除 KaTeX 隐藏层（无障碍/屏幕阅读），防止 U+FFFD 与重复文本进入 innerText
+                clone.querySelectorAll('.katex-mathml').forEach(k => k.remove());
+                clone.querySelectorAll('span.katex').forEach(k => {
+                    const css = k.getAttribute('style') || '';
+                    if (/clip:\s*rect\(1px,/i.test(css)) k.remove();
+                });
                 clone.querySelectorAll('img').forEach(img => {
                     const src = img.src || img.getAttribute('src') || '';
                     let alt = (img.alt || '').replace(/[\\[\\]\\(\\)]/g, '').trim();
@@ -84,6 +91,13 @@ def extract_text_with_images(element) -> str:
     # 方案2：fallback 到 innerHTML 正则提取（兼容 element.evaluate 偶发失败）
     try:
         html = element.inner_html()
+        # 剔除 KaTeX 无障碍/屏幕阅读隐藏层（clip:rect(1px…）及其 MathML，防 U+FFFD 混入
+        html = re.sub(
+            r'<span[^>]*class="[^"]*katex-mathml[^"]*"[^>]*>.*?</span>',
+            ' ', html, flags=re.IGNORECASE | re.DOTALL)
+        html = re.sub(
+            r'<span[^>]*class="[^"]*katex[^"]*"[^>]*clip:\s*rect\(1px,[^>]*>.*?</span>',
+            ' ', html, flags=re.IGNORECASE | re.DOTALL)
 
         def img_repl(m):
             tag = m.group(0)
@@ -105,6 +119,7 @@ def extract_text_with_images(element) -> str:
     try:
         return _clean_extracted_text(element.inner_text())
     except Exception:
+        print("    [debug] extract_text_with_images 纯文本兜底失败")
         return ""
 
 
@@ -134,10 +149,15 @@ def extract_questions_js(page_or_frame) -> list:
                     else if (text.includes('填空题')) qtype = '填空题';
                     else if (text.includes('简答题')) qtype = '简答题';
 
-                    // 处理图片：把 img 转成 markdown
+                    // 处理图片：把 img 转成 markdown；并剔除 KaTeX 隐藏层（防 U+FFFD / 重复文本）
                     const imgToMd = el => {
                         if (!el) return '';
                         const clone = el.cloneNode(true);
+                        clone.querySelectorAll('.katex-mathml').forEach(k => k.remove());
+                        clone.querySelectorAll('span.katex').forEach(k => {
+                            const css = k.getAttribute('style') || '';
+                            if (/clip:\s*rect\(1px,/i.test(css)) k.remove();
+                        });
                         clone.querySelectorAll('img').forEach(img => {
                             const src = img.src || img.getAttribute('src') || '';
                             const alt = img.alt || '';
@@ -220,6 +240,15 @@ BULK_EXTRACT_JS = """() => {
     const results = [];
     const imgToMd = el => {
         const clone = el.cloneNode(true);
+        // 剔除 KaTeX 的「无障碍/屏幕阅读」隐藏层：
+        //   - .katex-mathml（MathML sr-only）
+        //   - 带 clip:rect(1px… 的内联隐藏 .katex（学习通服务端把它渲染成损坏的 U+FFFD 文本）
+        // 保留可见公式（如 <em>C</em>(<em>k</em>...)），避免 U+FFFD 混入文档。
+        clone.querySelectorAll('.katex-mathml').forEach(k => k.remove());
+        clone.querySelectorAll('span.katex').forEach(k => {
+            const css = k.getAttribute('style') || '';
+            if (/clip:\s*rect\(1px,/i.test(css)) k.remove();
+        });
         clone.querySelectorAll('img').forEach(img => {
             const src = img.src || img.getAttribute('src') || '';
             let alt = (img.alt || '').replace(/[\\[\\]\\(\\)]/g, '').trim();
@@ -335,6 +364,7 @@ def extract_answer_fallback(item, options: list) -> str:
         if vals:
             return "；".join(str(v) for v in vals)
     except Exception:
+        print("    [debug] extract_answer_fallback 读取 input/textarea 失败")
         pass
 
     # 2. 从文本中匹配“答案：/正确答案：/标准答案：”后的内容
@@ -347,6 +377,7 @@ def extract_answer_fallback(item, options: list) -> str:
                 if ans and ans not in ('', '未识别'):
                     return ans
     except Exception:
+        print("    [debug] extract_answer_fallback 文本匹配答案失败")
         pass
 
     # 3. 若题目是判断/选择且没有任何答案文本，尝试从已选中的 radio/checkbox 取值
@@ -367,6 +398,7 @@ def extract_answer_fallback(item, options: list) -> str:
             if chosen:
                 return "选中选项：" + ", ".join(chosen)
         except Exception:
+            print("    [debug] extract_answer_fallback 读取选中选项失败")
             pass
 
     return ""
@@ -418,9 +450,10 @@ def extract_questions_from_page(page_or_frame, progress_hook=None) -> list:
                 items = inner
                 used_sel = ".questionLi (from .TiMu)"
         except Exception:
+            print("    [debug] 从 .TiMu 提取内部 .questionLi 失败")
             pass
 
-    print(f"    使用题目容器选择器：{used_sel or '无'}，命中 {len(items)} 个")
+    print(f"    [debug] 使用题目容器选择器：{used_sel or '无'}，命中 {len(items)} 个")
 
     # 防止异常情况下命中过多元素导致处理极慢
     if len(items) > 200:
@@ -433,6 +466,7 @@ def extract_questions_from_page(page_or_frame, progress_hook=None) -> list:
             try:
                 progress_hook(idx, len(items))
             except Exception:
+                print("    [debug] 逐题进度上报回调异常")
                 pass
         try:
             # 题干：优先带图的文本
@@ -509,6 +543,7 @@ def extract_questions_from_page(page_or_frame, progress_hook=None) -> list:
                                 if cand:
                                     answer = cand
                 except Exception:
+                    print("    [debug] 从 .mark_answer/.mark_fill 整段匹配答案失败")
                     pass
 
             # 若没拿到正确答案，使用 fallback（填空 input、文本匹配、选中选项等）
@@ -523,6 +558,7 @@ def extract_questions_from_page(page_or_frame, progress_hook=None) -> list:
                         stu_text = extract_text_with_images(stu)
                         answer = ("我的答案：" + stu_text) if stu_text else "（仅有学生作答，无正确答案）"
                 except Exception:
+                    print("    [debug] 读取学生答案失败")
                     pass
 
             # 题型推断
@@ -583,6 +619,7 @@ def click_reveal_answer(page_or_frame) -> bool:
             except Exception:
                 continue
     except Exception:
+        print("    [debug] click_reveal_answer 定位展开按钮失败")
         return pressed
     if pressed:
         wait_stable(page_or_frame, 1200)
@@ -604,7 +641,7 @@ def click_start_button(page_or_frame) -> bool:
         try:
             el = page_or_frame.locator(sel).first
             if el.count() and el.is_visible() and not el.is_disabled():
-                print(f'    点击开始按钮：{sel}')
+                print(f'    [debug] 点击开始按钮：{sel}')
                 el.click(timeout=ACTION_TIMEOUT)
                 wait_stable(page_or_frame, 4000)
                 return True
@@ -692,6 +729,7 @@ def open_progress_reporter(title: str, url: str):
             try:
                 _report_status(url or "", title, "in_progress", progress=v)
             except Exception:
+                print("    [debug] open_progress_reporter 上报异常")
                 pass
 
     return _report
@@ -704,6 +742,7 @@ def _report_homework_progress(title: str, url: str, fract: float):
         v = _HW_EXTRACT_START + (_HW_EXTRACT_END - _HW_EXTRACT_START) * max(0.0, min(1.0, fract))
         _report_status(url or "", title, "in_progress", progress=v)
     except Exception:
+        print("    [debug] _report_homework_progress 上报异常")
         pass
 
 
@@ -723,7 +762,7 @@ def extract_all_questions(page_or_frame, title: str = "", url: str = "",
     rep = open_progress_reporter(title, url)
 
     # 等待题目 iframe 加载（切片上报，覆盖打开阶段前段，消除进度停在 0% 的空窗）
-    print("    等待题目 iframe/页面加载...")
+    print("    [debug] 等待题目 iframe/页面加载...")
     wait_stable(page_or_frame, 4000, on_progress=lambda f: rep(0.7 * f))
 
     # 若页面有“开始作答”等按钮，先点击（主文档层）
@@ -731,7 +770,7 @@ def extract_all_questions(page_or_frame, title: str = "", url: str = "",
     rep(0.78)
 
     qframe = get_question_frame(page_or_frame)
-    print(f"    题目所在 frame URL：{qframe.url[:120]}")
+    print(f"    [debug] 题目所在 frame URL：{qframe.url[:120]}")
     rep(0.86)
 
     # 尝试展开“查看答案”——必须在题目 iframe 内点击，主文档 locator 到不了 frame 内部
@@ -759,7 +798,7 @@ def extract_all_questions(page_or_frame, title: str = "", url: str = "",
         if deadline and time.time() >= deadline:
             timed_out = True
             break
-        print(f"    正在抓取第 {page_idx} 页...")
+        print(f"    [debug] 正在抓取第 {page_idx} 页...")
         t0 = time.time()
         per_page_reported = False  # 每页开始时复位逐题标记
         try:
@@ -771,7 +810,7 @@ def extract_all_questions(page_or_frame, title: str = "", url: str = "",
         print(f"    [debug] extract_questions_from_page 耗时 {time.time() - t0:.2f}s，返回 {len(questions)} 题")
 
         if not questions:
-            print("    本页未识别到题目，尝试 JS 兜底...")
+            print("    [debug] 本页未识别到题目，尝试 JS 兜底...")
             t0 = time.time()
             try:
                 questions = extract_questions_js(qframe)
@@ -781,7 +820,7 @@ def extract_all_questions(page_or_frame, title: str = "", url: str = "",
             print(f"    [debug] extract_questions_js 耗时 {time.time() - t0:.2f}s，返回 {len(questions)} 题")
 
         if not questions:
-            print("    仍未识别到题目，保存 debug...")
+            print("    [debug] 仍未识别到题目，保存 debug...")
             debug_screenshot(qframe, f"page_{page_idx}_no_questions")
             dump_frame_html(qframe, f"page_{page_idx}_no_questions")
             break
@@ -790,7 +829,7 @@ def extract_all_questions(page_or_frame, title: str = "", url: str = "",
         for q in questions:
             q["index"] = len(all_questions) + questions.index(q) + 1
         all_questions.extend(questions)
-        print(f"    第 {page_idx} 页抓到 {len(questions)} 题，累计 {len(all_questions)} 题")
+        print(f"    [debug] 第 {page_idx} 页抓到 {len(questions)} 题，累计 {len(all_questions)} 题")
 
         # JS 兜底路径未走逐题钩子：把本页整体计为一个进度块，保证仍单调推进
         if not per_page_reported:
@@ -800,20 +839,20 @@ def extract_all_questions(page_or_frame, title: str = "", url: str = "",
         has_more = has_next_page(qframe)
         if not has_more:
             _report_homework_progress(title, url, 1.0)
-            print("    没有下一页了")
+            print("    [debug] 没有下一页了")
             break
 
         # 进入下一页：本页计入已完成页数，下一页逐题钩子基于新的 pages_done 继续单调递增
         pages_done += 1
 
         if not click_next_page(qframe):
-            print("    点击下一页失败")
+            print("    [debug] 点击下一页失败")
             break
 
         page_idx += 1
         # 翻页后题目 iframe 可能重新加载，重新定位
         qframe = get_question_frame(page_or_frame)
-        print(f"    翻页后题目 frame URL：{qframe.url[:120]}")
+        print(f"    [debug] 翻页后题目 frame URL：{qframe.url[:120]}")
         # 翻页后可能仍需展开答案（在 iframe 内部点击）
         click_reveal_answer(qframe)
 

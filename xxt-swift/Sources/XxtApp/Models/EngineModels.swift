@@ -9,6 +9,9 @@ struct EngineSettings: Codable, Equatable {
     var openDirOnComplete: Bool = true
     var showSourceURL: Bool = true
     var appearance: String = "system"
+    /// 实验室：多线程并发抓取（默认关闭；开启后并发线程数 2..4）
+    var concurrencyEnabled: Bool = false
+    var concurrencyWorkers: Int = 2
 
     enum CodingKeys: String, CodingKey {
         case courseURL = "course_url"
@@ -18,6 +21,8 @@ struct EngineSettings: Codable, Equatable {
         case openDirOnComplete = "open_dir_on_complete"
         case showSourceURL = "show_source_url"
         case appearance
+        case concurrencyEnabled = "concurrency_enabled"
+        case concurrencyWorkers = "concurrency_workers"
     }
 }
 

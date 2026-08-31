@@ -7,6 +7,8 @@ cookies.txt
 progress.json
 # 个人配置与本地路径
 settings.json
+# 登录态加密密钥（AES-256-GCM），随 App 生成在数据目录，切勿入库/导出
+login.key
 
 # ===== 抓取输出与运行数据 =====
 out/
@@ -49,6 +51,7 @@ backups/
 
 # ===== 开发期临时/探针脚本（含个人路径，勿入库） =====
 script/_tmp_*
+script/_probe_*
 verify_structure_probe.py
 xxt_html.zip
 

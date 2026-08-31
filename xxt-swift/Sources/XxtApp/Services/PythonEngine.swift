@@ -10,12 +10,8 @@ final class PythonEngine: NSObject {
     /// 进程是否已启动且未退出
     private(set) var isRunning = false
 
-    private let projectDir = "/Users/pengyufeng/Documents/xxt"
-    private let bridgeScript = "/Users/pengyufeng/Documents/xxt/run_bridge.sh"
-    private let bridgePy = "/Users/pengyufeng/Documents/xxt/bridge.py"
-
     /// 定位引擎可执行与运行环境。优先 bundle 内自包含引擎（相对路径、数据落到用户应用支持目录）；
-    /// 若 bundle 未内置引擎（开发态），回退用本机 anaconda + bridge.py。
+    /// 若 bundle 未内置引擎（开发态），回退用本机 python3 + bridge.py（工程根由 XXT_PROJECT_DIR 或当前目录决定）。
     private func resolveLaunch() -> (executableURL: URL, arguments: [String], cwd: URL, browsersDir: String?) {
         if let res = Bundle.main.resourceURL {
             let engine = res.appendingPathComponent("engine_xxt/engine_xxt")
@@ -31,23 +27,41 @@ final class PythonEngine: NSObject {
                 return (engine, [], cwd, browsers)
             }
         }
-        // 回退：开发环境（bundle 未内置引擎时）
+        // 回退：开发环境（bundle 未内置引擎，直跑 bridge.py）。
+        // 工程根不再写死开发者机器路径：优先环境变量 XXT_PROJECT_DIR，缺省取当前工作目录。
+        let projectDir = ProcessInfo.processInfo.environment["XXT_PROJECT_DIR"]
+            ?? FileManager.default.currentDirectoryPath
         let cwd = URL(fileURLWithPath: projectDir, isDirectory: true)
-        let direct = URL(fileURLWithPath: "/Users/pengyufeng/opt/anaconda3/bin/python3")
-        if FileManager.default.isExecutableFile(atPath: direct.path),
+        let bridgePy = URL(fileURLWithPath: projectDir).appendingPathComponent("bridge.py").path
+        if let py = Self.pythonFromPATH(),
            FileManager.default.fileExists(atPath: bridgePy) {
-            return (direct, [bridgePy], cwd, nil)
+            return (py, [bridgePy], cwd, nil)
         }
         // 兜底：交给 run_bridge.sh 自行发现解释器
+        let bridgeScript = URL(fileURLWithPath: projectDir).appendingPathComponent("run_bridge.sh").path
         return (URL(fileURLWithPath: "/bin/bash"), [bridgeScript], cwd, nil)
     }
 
     /// 引擎运行数据目录（settings/state/cookies/progress/logs 等相对文件落在其中），
     /// 可写、独立于 App bundle，分发给其他用户也不会污染应用安装目录。
-    private func supportDataDir() -> URL {
+    /// 同时作为引擎回报的相对路径（如修复项）的基准目录，避免在前端写死开发者机器路径。
+    static var workingDir: String {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser
-        return base.appendingPathComponent("XxtApp", isDirectory: true)
+        return base.appendingPathComponent("XxtApp", isDirectory: true).path
+    }
+
+    private func supportDataDir() -> URL {
+        URL(fileURLWithPath: Self.workingDir, isDirectory: true)
+    }
+
+    /// 从 PATH 上探测可用 python3，替代把开发者的 anaconda 绝对路径写死进二进制。
+    private static func pythonFromPATH() -> URL? {
+        for dir in (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":") {
+            let p = URL(fileURLWithPath: String(dir)).appendingPathComponent("python3")
+            if FileManager.default.isExecutableFile(atPath: p.path) { return p }
+        }
+        return nil
     }
 
     /// 首次运行：把 App 内置的无头浏览器（chromium_headless_shell / ffmpeg）复制到用户可写目录，

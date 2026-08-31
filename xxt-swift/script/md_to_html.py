@@ -40,6 +40,17 @@ def inline(text: str) -> str:
     return t
 
 
+def slug(text: str) -> str:
+    """把标题文本转成稳定的 HTML 片内锚点 id。
+
+    规则：全角破折号/下划线 → 连字符 `-`，再移除其余所有非「中文/字母/数字/连字符」
+    字符（标点、空格、括号等）。与 markdown 目录里手写的 `#锚点` 约定保持一致，
+    使目录链接与标题 id 能对上、可正常跳转。
+    """
+    s = text.replace("——", "--").replace("—", "-").replace("_", "-")
+    return re.sub(r"[^\w-]", "", s, flags=re.UNICODE)
+
+
 def render(md: str) -> str:
     lines = md.splitlines()
     out: list[str] = []
@@ -107,13 +118,14 @@ def render(md: str) -> str:
             flush_table()
             continue
 
-        # 标题
+        # 标题（带 slug 锚点 id，供目录跳转）
         m = re.match(r"^(#{1,6})\s+(.*)$", stripped)
         if m:
             flush_list()
             flush_table()
             level = len(m.group(1))
-            out.append("<h%d>%s</h%d>" % (level, inline(m.group(2)), level))
+            anchor = slug(m.group(2))
+            out.append('<h%d id="%s">%s</h%d>' % (level, anchor, inline(m.group(2)), level))
             i += 1
             continue
 

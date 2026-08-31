@@ -88,7 +88,7 @@ def enter_homework_tab(page: Page) -> bool:
         try:
             el = page.locator(sel).first
             if el.count() and el.is_visible():
-                print(f'  点击标签：{sel}')
+                print(f'  [debug] 点击标签：{sel}')
                 el.click(timeout=ACTION_TIMEOUT)
                 wait_stable(page, LIST_NAV_SETTLE_MS)
                 return True
@@ -385,6 +385,7 @@ def find_homework_list_frame(page: Page):
     try:
         page.wait_for_selector("iframe", timeout=ACTION_TIMEOUT)
     except Exception:
+        print("    [debug] 等待作业列表 iframe 失败，继续按原页面处理")
         pass
 
     for f in page.frames:
@@ -413,7 +414,7 @@ def collect_all_homeworks(list_frame, on_page=None, initial_homeworks=None) -> l
     try:
         reported_done, expected_total = read_homework_total(list_frame)
         if expected_total:
-            print(f"  检测到作业总量：{reported_done if reported_done is not None else '?'}/{expected_total}")
+            print(f"  [debug] 检测到作业总量：{reported_done if reported_done is not None else '?'}/{expected_total}")
     except Exception:
         expected_total = -1
 
@@ -434,13 +435,13 @@ def collect_all_homeworks(list_frame, on_page=None, initial_homeworks=None) -> l
     # 第 1 页：优先用调用方已提取好的条目，否则本函数内部提取一次
     if initial_homeworks:
         new_first = _absorb(initial_homeworks)
-        print(f"  第 1 页（seed）{len(new_first)} 个新作业，累计 {len(all_homeworks)} 个")
+        print(f"  [debug] 第 1 页（seed）{len(new_first)} 个新作业，累计 {len(all_homeworks)} 个")
         if on_page and new_first:
             on_page(new_first)
     else:
-        print("\n===== 作业列表第 1 页（统计）=====")
+        print("\n[debug] ===== 作业列表第 1 页（统计）=====")
         new_first = _absorb(extract_homework_items(list_frame))
-        print(f"  第 1 页 {len(new_first)} 个新作业，累计 {len(all_homeworks)} 个")
+        print(f"  [debug] 第 1 页 {len(new_first)} 个新作业，累计 {len(all_homeworks)} 个")
         if on_page and new_first:
             on_page(new_first)
 
@@ -462,23 +463,23 @@ def collect_all_homeworks(list_frame, on_page=None, initial_homeworks=None) -> l
                         probed = True
                         break
                 if not probed:
-                    print("  没有下一页了（已完成缺失兜底探测）")
+                    print("  [debug] 没有下一页了（已完成缺失兜底探测）")
                     break
             else:
-                print("  没有下一页了")
+                print("  [debug] 没有下一页了")
                 break
         if not click_next_page(list_frame):
-            print("  点击下一页失败，停止统计")
+            print("  [debug] 点击下一页失败，停止统计")
             break
         page_num += 1
         wait_for_iframe_content(list_frame, 10_000)
         scroll_frame_to_bottom(list_frame)
         time.sleep(LIST_PAGE_TURN_SETTLE_SEC)
 
-        print(f"\n===== 作业列表第 {page_num} 页（统计）=====")
+        print(f"\n[debug] ===== 作业列表第 {page_num} 页（统计）=====")
         # C方案：上方已统一 wait+scroll+sleep 一次（含懒加载），此处跳过 extract 内部的重复懒加载
         new = _absorb(extract_homework_items(list_frame, skip_lazy=True))
-        print(f"  第 {page_num} 页 {len(new)} 个新作业，累计 {len(all_homeworks)} 个")
+        print(f"  [debug] 第 {page_num} 页 {len(new)} 个新作业，累计 {len(all_homeworks)} 个")
         if on_page and new:
             on_page(new)
 
@@ -641,4 +642,5 @@ def _parse_course_param(href: str, key: str) -> str:
         v = q.get(key, [""])[0]
         return str(v) if v else ""
     except Exception:
+        print("    [debug] 解析课程参数失败")
         return ""

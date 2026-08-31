@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Hardened Runtime 需要的 entitlements。
+         注意：暂不启用 App Sandbox——引擎是外部 Python 子进程，需要 ①spawn 子进程、
+         ②读写用户在系统弹窗中选择的任意输出目录，开启沙盒会显著受限并需大改引擎架构。 -->
+    <!-- 引擎为 PyInstaller 自包含二进制，运行时需加载其随附的动态库（位于自身 _internal/ 内）。
+         Hardened Runtime 下通过库验证，允许加载，避免引擎启动即被拒。 -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

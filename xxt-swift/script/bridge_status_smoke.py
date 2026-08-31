@@ -11,8 +11,8 @@ import os
 import subprocess
 import sys
 
-APP_DIR = "/Users/pengyufeng/Documents/xxt"
-PYTHON = "/Users/pengyufeng/opt/anaconda3/bin/python3"
+APP_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+PYTHON = os.environ.get("XXT_PYTHON", "python3")
 
 
 def naive_check(py_code: str) -> str:
@@ -70,7 +70,11 @@ transient = []
 def cb(url, title, status, progress=None, overall=None):
     transient.append((url, title, status, progress, overall))
 config.set_status_callback(cb)
-# 设置作业上下文，验证 in_progress 会附带总进度 overall，completed 不附带
+# 设置作业上下文，验证 in_progress 会附带总进度 overall，completed 不附带。
+# 并发模型下整体进度 =（已完成计数 + 各线程在途之和）/ 总量，与旧版按序号估算不同，
+# 故这里先用 bump_done_count() 模拟「已结束 1 个作业」，使 overall = (1 + 0.5) / 4 = 0.375。
+config.reset_done_count()
+config.bump_done_count()
 config.set_active_homework(2, 4)
 config._report_status("https://example.com/hw?id=42", "作业标题 测试", "in_progress", 0.5)
 config._report_status("https://example.com/hw?id=43", "作业标题 完成", "completed", 1.0)
@@ -95,7 +99,7 @@ for ln in out.splitlines():
         cb1 = json.loads(ln[len("CB1:"):])
 assert cb0, f"状态回调未被触发: {out}"
 assert cb1, f"completed 回调未被触发: {out}"
-# in_progress：url/title 有效，progress=0.5，且附带总进度 overall（(2-1+0.5)/4=0.375）
+# in_progress：url/title 有效，progress=0.5，且附带总进度 overall（(1+0.5)/4=0.375）
 u0, t0, s0, p0, o0 = cb0
 assert (u0, s0) == ("https://example.com/hw?id=42", "in_progress"), cb0
 assert abs(p0 - 0.5) < 0.001, f"progress 异常: {cb0}"

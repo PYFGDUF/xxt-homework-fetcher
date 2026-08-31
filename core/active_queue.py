@@ -16,6 +16,7 @@ _lock = threading.RLock()
 _items: list[dict] = []       # 待抓队列（可按索引读取，尾部会被运行中追加）
 _done: set = set()            # 已入队/已处理作业的身份键，用于去重，防重复加入
 _registered = False           # 本次运行是否已装载初始队列
+_claim_idx = 0                # worker 并发领取的“下一个未认领”下标（串行迭代不受影响）
 
 
 def _key(hw: dict) -> str:
@@ -23,12 +24,13 @@ def _key(hw: dict) -> str:
 
 
 def register_active_homeworks(items: list[dict]):
-    """一次抓取开始前装载初始队列，并重置去重集合。"""
-    global _items, _done, _registered
+    """一次抓取开始前装载初始队列，并重置去重集合与领取下标。"""
+    global _items, _done, _registered, _claim_idx
     with _lock:
         _items = [dict(i) for i in items]
         _done = {_key(i) for i in _items}
         _registered = True
+        _claim_idx = 0
 
 
 def add_active_homeworks(items) -> int:
@@ -72,6 +74,31 @@ def mark_active_done(hw: dict) -> None:
             _done.add(k)
 
 
+def active_claim_next() -> tuple:
+    """并发模式下原子领取下一个未处理作业。
+
+    返回 (hw, index, queue_len)：hw 为队列项副本；队列已到底或已停止则 hw 为
+    None。index 为该作业在队列中的位置（1 基），queue_len 为当前队列长度。
+    worker 线程之间通过该函数互斥领取，保证同一作业只被一个 worker 处理。
+    """
+    global _claim_idx
+    with _lock:
+        if _claim_idx >= len(_items):
+            return None, _claim_idx, len(_items)
+        item = dict(_items[_claim_idx])
+        k = _key(item)
+        if k:
+            _done.add(k)
+        _claim_idx += 1
+        return item, _claim_idx, len(_items)
+
+
+def active_claim_index() -> int:
+    """返回当前已领取到的下标（用于决定是否继续等待动态新增）。"""
+    with _lock:
+        return _claim_idx
+
+
 def is_active_registered() -> bool:
     """当前是否有进行中的动态抓取队列。"""
     with _lock:
@@ -80,8 +107,9 @@ def is_active_registered() -> bool:
 
 def clear_active_queue() -> None:
     """抓取结束/异常收尾时清空动态队列。"""
-    global _items, _done, _registered
+    global _items, _done, _registered, _claim_idx
     with _lock:
         _items = []
         _done = set()
         _registered = False
+        _claim_idx = 0

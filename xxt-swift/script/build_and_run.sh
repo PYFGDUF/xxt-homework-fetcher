@@ -7,10 +7,11 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="XxtApp"
 DIST_DIR="$PROJECT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
-# 版本号（版本信息单一来源）：变更会写进 Info.plist，并纳入指纹触发重新组装
-MARKETING_VERSION="2.2"
+# 版本号（版本信息单一来源）：变更只改这里，会写进 Info.plist 并纳入指纹触发重新组装，
+# Swift 侧通过 VersionService 从 Info.plist 读取，二者不再多源。
+MARKETING_VERSION="2.3beta"
 APP_TITLE="学习通作业爬取工具"
-BUNDLE_INFO="学习通作业爬取工具 v2.2 beta"
+BUNDLE_INFO="$APP_TITLE v$MARKETING_VERSION"
 # 全局可覆盖：调用方显式指定 DEVELOPER_DIR 时优先采用，否则自动探测。
 # 自动探测规则：优先选择带 SwiftUIMacros 插件的“完整 Xcode”工具链
 # （CommandLineTools 缺少该插件，编译 @State/@Observable 宏直接失败）；
@@ -97,7 +98,21 @@ if [ -x "$ENGINE_SRC_ROOT/engine_xxt" ]; then
 fi
 # 二进制 + 图标 + 引擎/浏览器 + 版本信息 合并指纹；任一发生变化都会触发重新组装/重签
 VERSION_FP="$(printf '%s|%s|%s' "$MARKETING_VERSION" "$APP_TITLE" "$BUNDLE_INFO" | shasum -a 256 | awk '{print $1}')"
-NEW_FP="${BIN_FP}${ICON_FP}${ENGINE_FP}${VERSION_FP}"
+# Hardened Runtime 的 entitlements 也纳入指纹：entitlement 变更会触发重新组装/重签
+ENT_FILE="$PROJECT_DIR/XxtApp.entitlements"
+ENT_FP=""
+if [ -f "$ENT_FILE" ]; then
+    ENT_FP="$(shasum -a 256 "$ENT_FILE" | awk '{print $1}')"
+fi
+# 内嵌帮助文档源也纳入指纹：帮助文档变更会触发重新组装/重新打包 Help.html
+# （否则只改 docs/使用帮助.md 会因二进制未变而命中 SKIP_ASSEMBLE，新文档无法进 App）
+HELP_FP=""
+for f in "$PROJECT_DIR/docs/使用帮助.md" "$PROJECT_DIR/script/md_to_html.py"; do
+    if [ -f "$f" ]; then
+        HELP_FP="${HELP_FP}$(shasum -a 256 "$f" | awk '{print $1}');"
+    fi
+done
+NEW_FP="${BIN_FP}${ICON_FP}${ENGINE_FP}${VERSION_FP}${ENT_FP}${HELP_FP}"
 
 SKIP_ASSEMBLE=0
 if [ -x "$APP_BUNDLE/Contents/MacOS/$APP_NAME" ] \
@@ -122,6 +137,14 @@ if [ "$SKIP_ASSEMBLE" = "1" ]; then
     fi
     exit 0
 fi
+
+# 组装/重签前必须先终止任何已运行的 XxtApp 实例。
+# 原因：若在进程运行期间用新二进制覆盖 bundle 并重新签名，旧进程仍映射着
+# 已失效的代码页，后续主线程触碰该页会触发内核签名校验失败，报
+# "SIGKILL (Code Signature Invalid) / Invalid Page" 崩溃。先退出可杜绝该窗口。
+echo "==> 终止已运行的 $APP_NAME 实例（避免运行期覆盖/重签导致签名失效崩溃）"
+pkill -x "$APP_NAME" 2>/dev/null || true
+sleep 1
 
 echo "==> 组装 $APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
@@ -212,8 +235,20 @@ PLIST
 # 关键：组装完成后必须对整个 .app 重新签名（ad-hoc），
 # 否则二进制在 build 时生成的签名不覆盖后写入的 Info.plist，
 # 会出现 Info.plist=not bound，被 taskgated 判定为 Invalid Signature 而 SIGKILL。
-echo "==> 对 $APP_BUNDLE 进行 ad-hoc 签名"
-codesign --force --deep --sign - "$APP_BUNDLE"
+echo "==> 对 $APP_BUNDLE 进行签名（Hardened Runtime）"
+# 默认 ad-hoc 签名；若显式提供 DEVELOPER_CERT_ID（提交公证/分发给其他 Mac 时），
+# 改用对应 Developer ID / 证书身份签名。
+CS_SIGN_ID="-"
+if [ -n "${DEVELOPER_CERT_ID:-}" ]; then
+    CS_SIGN_ID="$DEVELOPER_CERT_ID"
+    echo "  使用证书身份：$DEVELOPER_CERT_ID"
+fi
+if [ -f "$ENT_FILE" ]; then
+    codesign --force --deep --options runtime --entitlements "$ENT_FILE" --sign "$CS_SIGN_ID" "$APP_BUNDLE"
+else
+    echo "  [warn] 未找到 $ENT_FILE，跳过 entitlements（无 Hardened Runtime）"
+    codesign --force --deep --sign "$CS_SIGN_ID" "$APP_BUNDLE"
+fi
 
 # 签名后校验是否已正确绑定 Info.plist
 codesign --verify --deep "$APP_BUNDLE"

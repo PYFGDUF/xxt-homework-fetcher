@@ -62,6 +62,9 @@ final class AppState {
     var showImageFailAlert = false
     var imageFailMessage = "部分图片下载失败"
     private var pendingImageFailures = 0
+    // 启动时网络代理检测（VPN/系统代理可能影响抓取稳定性，仅启动检查一次）
+    var showProxyAlert = false
+    var proxyMessage = ""
     var lastOutputDir = ""
     var courseName = ""
 
@@ -88,12 +91,8 @@ final class AppState {
     var completedHomeworkIds = Set<String>()
     // 本次会话是否真正发起了抓取（用于区分「done 来自 load_homeworks」还是来自 start）
     private var fetchStarted = false
-    // 主题 ID（本地持久化，仅预设主题，用户不可自由调色）
-    var themeID: String {
-        didSet { UserDefaults.standard.set(themeID, forKey: "themeID") }
-    }
     /// 当前生效主题（固定为「活力靛蓝」，不再提供切换入口）
-    var theme: AppTheme { AppTheme.find("indigo") }
+    var theme: AppTheme { AppTheme.indigo }
 
     // v2.0 界面模式（焕新 / 经典），本地持久化
     var uiMode: AppUIMode {
@@ -108,7 +107,8 @@ final class AppState {
     var logs: [LogLine] = []
     private var logSeq = 0
 
-    static let defaultProjectDir = "/Users/pengyufeng/Documents/xxt"
+    /// 引擎工作/数据目录：引擎回报的相对路径基于它解析，不再写死开发者机器路径。
+    static var defaultProjectDir: String { PythonEngine.workingDir }
 
     /// 由设置里的「外观」偏好推导出的界面配色，nil 表示跟随系统
     var preferredColorScheme: ColorScheme? {
@@ -202,7 +202,6 @@ final class AppState {
     }
 
     init() {
-        themeID = UserDefaults.standard.string(forKey: "themeID") ?? "indigo"
         uiMode = AppUIMode(rawValue: UserDefaults.standard.string(forKey: "uiMode") ?? "") ?? .huanxin
         playSoundOnComplete = UserDefaults.standard.object(forKey: "playSoundOnComplete") as? Bool ?? true
         notifyOnComplete = UserDefaults.standard.object(forKey: "notifyOnComplete") as? Bool ?? true
@@ -232,6 +231,60 @@ final class AppState {
         refreshSettings()
         // 启动时检查是否已保存登录态，供设置界面切换「登录/退出」按钮
         refreshLoginStatus()
+        // 启动即检测网络代理：VPN/系统代理可能影响抓取稳定性，命中则弹窗提示
+        checkProxyAtStartup()
+    }
+
+    /// 启动时网络代理检测：系统代理或环境变量命中任一即弹窗提示。
+    /// 只检测、不阻断，便于用户知晓 VPN 可能影响抓取稳定性。
+    func checkProxyAtStartup() {
+        guard let desc = proxyDescription else { return }
+        proxyMessage = desc
+        appendLog("检测到网络代理（可能影响抓取稳定性）：\(desc)", level: "warn")
+        showProxyAlert = true
+    }
+
+    /// 汇总当前启用的网络代理（系统代理 + 环境变量），无则返回 nil。
+    private var proxyDescription: String? {
+        // 1) 环境变量
+        var envHits: [String] = []
+        let env = ProcessInfo.processInfo.environment
+        for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
+            if let v = env[key], !v.isEmpty { envHits.append("\(key)=\(v)") }
+        }
+        // 2) 系统代理（scutil --proxy）
+        var systemHits: [String] = []
+        if let sys = systemProxyState {
+            for (key, label) in [("HTTPEnable", "HTTP"), ("HTTPSEnable", "HTTPS"),
+                                 ("SOCKSEnable", "SOCKS"), ("ProxyAutoConfigEnable", "自动配置 PAC")] {
+                if sys[key] == "1" { systemHits.append(label) }
+            }
+        }
+        if systemHits.isEmpty && envHits.isEmpty { return nil }
+        var parts: [String] = systemHits
+        if !envHits.isEmpty { parts.append("环境变量 " + envHits.joined(separator: ", ")) }
+        return parts.joined(separator: "；")
+    }
+
+    /// 执行 `scutil --proxy` 读取系统网络代理状态，解析为 key → value。
+    private var systemProxyState: [String: String]? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/scutil")
+        p.arguments = ["--proxy"]
+        let out = Pipe()
+        p.standardOutput = out
+        do { try p.run(); p.waitUntilExit() } catch { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        let txt = String(data: data, encoding: .utf8) ?? ""
+        var result: [String: String] = [:]
+        let pattern = #/\s*(\w+)\s*:\s*(.+)/#
+        for line in txt.split(separator: "\n") {
+            guard let m = line.firstMatch(of: pattern) else { continue }
+            let key = String(m.1)
+            let val = String(m.2).replacingOccurrences(of: "\"", with: "").trimmingCharacters(in: .whitespaces)
+            result[key] = val
+        }
+        return result
     }
 
     /// 向引擎查询当前是否已保存有效登录态，并更新 isLoggedIn。
@@ -306,6 +359,8 @@ final class AppState {
                 showLoginSuccess = true
             }
             appendLog("登录成功", level: "success")
+            // 登录成功后同样在后台静默加载课程列表，避免二次等待
+            preloadCoursesIfLoggedIn()
         case .courseList:
             isEngineBusy = false
             isLoadingCourses = false
@@ -343,12 +398,15 @@ final class AppState {
             if let dir = event.value.outputDir, !dir.isEmpty {
                 lastOutputDir = dir
             }
-            // 结束标记：仅当本次确实发起了抓取时才切换「结果卡」；
-            // load_homeworks 也会触发 done，但不应点亮结果卡。
+            // 结束标记：仅当本次确实发起了抓取时才切换「结果卡」并触发完成通知；
+            // load_homeworks 也会触发 done，但不应点亮结果卡、也不应发完成通知。
             if fetchStarted {
                 lastRunFinished = true
                 fetchStarted = false
                 runEndDate = Date()
+                if success {
+                    completionReminder()
+                }
             }
             // 进度归零，避免进度条停留在最后一个位置
             progressCurrent = 0
@@ -356,9 +414,6 @@ final class AppState {
             overallProgress = nil
             displayProgress = 0
             appendLog(msg, level: success ? "success" : "error")
-            if success {
-                completionReminder()
-            }
             refreshProgressIfNeeded()
         case .status:
             handleStatusEvent(event.value)
@@ -375,13 +430,18 @@ final class AppState {
         if playSoundOnComplete, let sound = NSSound(named: "Glass") {
             sound.play()
         }
-        if notifyOnComplete {
-            let center = UNUserNotificationCenter.current()
-            center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        guard notifyOnComplete else { return }
+        let center = UNUserNotificationCenter.current()
+        // 仅当用户已授权（authorized/临时的 provisional）且开启横幅时才真正发送；
+        // 未授权、被拒绝或只在通知中心展示时静默跳过，避免无意义 add 失败。
+        center.getNotificationSettings { settings in
+            let authorized = settings.authorizationStatus == .authorized
+                || settings.authorizationStatus == .provisional
+            guard authorized, settings.alertSetting == .enabled else { return }
             let content = UNMutableNotificationContent()
             content.title = "学习通作业爬取工具"
             // 用本轮实际处理结果计数（含运行中新增作业），而非一开始的勾选数，避免少报
-            content.body = "抓取完成：已处理 \(runOkCount + runFailCount) 个作业"
+            content.body = "抓取完成：已处理 \(self.runOkCount + self.runFailCount) 个作业"
             content.sound = .default
             let req = UNNotificationRequest(
                 identifier: UUID().uuidString,
@@ -648,10 +708,11 @@ final class AppState {
         lastRunFinished = false
     }
 
-    /// 返回主菜单：隐藏结果卡、清空 URL 与作业列表，回到初始空闲状态，便于抓取其他课程。
+    /// 返回主菜单：隐藏结果卡、清空 URL/课程选中与作业列表，回到初始空闲状态，便于抓取其他课程。
     func backToMainMenu() {
         lastRunFinished = false
         settings.courseURL = ""
+        selectedCourse = nil
         homeworks.removeAll()
         selectedHomeworkIDs.removeAll()
         runOkCount = 0

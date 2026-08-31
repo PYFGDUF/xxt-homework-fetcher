@@ -20,6 +20,8 @@ struct SettingsView: View {
         var notifyOnComplete: Bool
         var showSourceURL: Bool
         var appearance: String
+        var concurrencyEnabled: Bool
+        var concurrencyWorkers: Int
     }
 
     init() {
@@ -28,7 +30,8 @@ struct SettingsView: View {
                                                    forceRegrab: false,
                                                    openDirOnComplete: false, playSoundOnComplete: true,
                                                    notifyOnComplete: true, showSourceURL: true,
-                                                   appearance: "system"))
+                                                   appearance: "system",
+                                                   concurrencyEnabled: false, concurrencyWorkers: 2))
     }
 
     var body: some View {
@@ -45,14 +48,8 @@ struct SettingsView: View {
         .background(WindowCenterer { window in
             if let window { window.center() }
         })
-        .alert("确认退出登录？", isPresented: $confirmLogout) {
-            Button("取消", role: .cancel) { }
-            Button("退出登录", role: .destructive) {
-                app.logout()
-                dismiss()
-            }
-        } message: {
-            Text("这将清除本地保存的登录状态（state.json 等），再次抓取时需重新扫码登录。")
+        .sheet(isPresented: $confirmLogout) {
+            ConfirmLogoutView(isPresented: $confirmLogout)
         }
         .onAppear {
             let s = app.settings
@@ -62,7 +59,9 @@ struct SettingsView: View {
                                   playSoundOnComplete: app.playSoundOnComplete,
                                   notifyOnComplete: app.notifyOnComplete,
                                   showSourceURL: s.showSourceURL,
-                                  appearance: s.appearance)
+                                  appearance: s.appearance,
+                                  concurrencyEnabled: s.concurrencyEnabled,
+                                  concurrencyWorkers: s.concurrencyWorkers)
             storage = app.storageUsage()
         }
     }
@@ -121,6 +120,10 @@ struct SettingsView: View {
                     Toggle("文档中展示来源 URL", isOn: $draft.showSourceURL)
                 }
 
+                Section("实验室") {
+                    labContent
+                }
+
                 Section("登录") {
                     loginRow
                 }
@@ -151,6 +154,10 @@ struct SettingsView: View {
                         optionsCard.transition(.asymmetric(
                             insertion: .opacity.combined(with: .move(edge: .bottom)),
                             removal: .opacity.combined(with: .move(edge: .top))))
+                    case 2:
+                        labCard.transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .bottom)),
+                            removal: .opacity.combined(with: .move(edge: .top))))
                     default:
                         loginCard.transition(.asymmetric(
                             insertion: .opacity.combined(with: .move(edge: .bottom)),
@@ -174,7 +181,8 @@ struct SettingsView: View {
             options: [
                 (label: "通用", icon: "gearshape", value: 0),
                 (label: "选项", icon: "slider.horizontal.3", value: 1),
-                (label: "登录", icon: "person.badge.key", value: 2)
+                (label: "实验室", icon: "flask", value: 2),
+                (label: "登录", icon: "person.badge.key", value: 3)
             ],
             selection: $huanxinTab
         )
@@ -182,11 +190,28 @@ struct SettingsView: View {
         .padding(.top, 18)
     }
 
-    /// 通用页：输出目录卡片 + 存储空间卡片
+    /// 通用页：输出目录卡片 + 存储空间卡片 + 版本卡片
     private var generalTab: some View {
         VStack(spacing: 14) {
             generalCard
             storageCard
+            aboutCard
+        }
+    }
+
+    /// 通用：版本信息（版本号来自 VersionService，单一来源）
+    private var aboutCard: some View {
+        settingSection(icon: "info.circle", title: "关于", subtitle: "版本信息") {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(VersionService.appName)
+                        .font(.body.weight(.semibold))
+                    Text("版本 \(VersionService.marketingVersion) (build \(VersionService.bundleVersion))")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
         }
     }
 
@@ -355,6 +380,50 @@ struct SettingsView: View {
         }
     }
 
+    /// 实验室：实验性功能（多线程并发抓取）
+    private var labCard: some View {
+        settingSection(icon: "flask", title: "实验室", subtitle: "实验性功能，可能影响稳定性") {
+            labContent
+        }
+    }
+
+    /// 实验室内容：多线程并发开关 + 并发线程数选择（开启后显示，最多 4）
+    private var labContent: some View {
+        VStack(spacing: 0) {
+            settingToggle("bolt.horizontal",
+                          title: "多线程并发",
+                          subtitle: "开启后并行抓取多个作业，提高整体速度（默认关闭）",
+                          isOn: $draft.concurrencyEnabled)
+            if draft.concurrencyEnabled {
+                rowDivider
+                HStack(spacing: 12) {
+                    IconBadge(symbol: "square.stack.3d.up", tint: app.theme.primary,
+                              soft: app.theme.primary.opacity(0.10))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("并发线程数")
+                            .font(.body.weight(.medium))
+                        Text("最多 4 个并发浏览器")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    ThemeCapsuleTabs(
+                        theme: app.theme,
+                        options: [
+                            (label: "2", icon: nil, value: 2),
+                            (label: "3", icon: nil, value: 3),
+                            (label: "4", icon: nil, value: 4)
+                        ],
+                        selection: $draft.concurrencyWorkers
+                    )
+                    .frame(width: 152)
+                }
+                .padding(.vertical, 4)
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: draft.concurrencyEnabled)
+    }
+
     /// 登录 / 退出
     private var loginCard: some View {
         settingSection(icon: "person.badge.key", title: "登录状态", subtitle: app.isLoggedIn ? "已登录，可直接抓取作业" : "尚未登录学习通") {
@@ -518,6 +587,8 @@ struct SettingsView: View {
         s.openDirOnComplete = draft.openDirOnComplete
         s.showSourceURL = draft.showSourceURL
         s.appearance = draft.appearance
+        s.concurrencyEnabled = draft.concurrencyEnabled
+        s.concurrencyWorkers = draft.concurrencyWorkers
         app.settings = s
         app.setPlaySound(draft.playSoundOnComplete)
         app.setNotify(draft.notifyOnComplete)

@@ -50,7 +50,7 @@ struct HuanxinView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
+            if phase != .tutorial { Divider() }
 
             ZStack {
                 mainArea
@@ -71,11 +71,10 @@ struct HuanxinView: View {
             .animation(.smooth(duration: 0.35), value: loading)
             .animation(.smooth(duration: 0.35), value: phase)
 
-            Divider()
+            if phase != .tutorial { Divider() }
             taskBar
         }
         .tint(app.theme.primary)
-        .animation(.easeInOut(duration: 0.3), value: app.themeID)
         // 运行结束时自动复位「返回作业列表」，下次抓取仍默认展示进度面板
         .onChange(of: app.isRunning) { _, isRunning in
             if !isRunning { showListDuringRun = false }
@@ -135,9 +134,6 @@ struct HuanxinView: View {
 
     private var header: some View {
         HStack {
-            Text("学习通作业爬取工具")
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(.primary)
             Spacer()
             HStack(spacing: 6) {
                 statusDot
@@ -381,6 +377,21 @@ struct HuanxinView: View {
             }
             .buttonStyle(.minimalBrand(theme: app.theme))
             .help("进入课程列表，选择要抓取的课程")
+
+            Button {
+                app.openHelpDocument()
+            } label: {
+                Text("帮助文档")
+                    .font(.callout.weight(.medium))
+                    .frame(minWidth: 150)
+                    .padding(.vertical, 3)
+            }
+            .outlineButtonStyle(active: app.uiMode == .huanxin, theme: app.theme)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(nsColor: .quaternarySystemFill))
+            )
+            .help("打开使用帮助文档")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
@@ -943,13 +954,17 @@ struct HuanxinView: View {
                 }
 
                 Button {
-                    withAnimation(.smooth(duration: 0.45)) { app.backToMainMenu() }
+                    withAnimation(.smooth(duration: 0.45)) {
+                        app.backToMainMenu()
+                        // backToMainMenu 只复位数据；需切回课程列表阶段，否则仍停留在空作业列表页
+                        phase = .course
+                    }
                 } label: {
                     Label("抓取其他课程作业", systemImage: "square.grid.2x2")
                         .font(.callout.weight(.medium))
                 }
                 .buttonStyle(.minimalOutline(theme: app.theme))
-                .help("返回主菜单并清空课程 URL")
+                .help("返回课程列表，重新选择其他课程")
 
                 Button {
                     withAnimation(.smooth(duration: 0.45)) { app.backToSelection() }

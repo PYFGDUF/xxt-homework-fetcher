@@ -11,8 +11,8 @@ import subprocess
 import sys
 import time
 
-APP_DIR = "/Users/pengyufeng/Documents/xxt"
-PYTHON = "/Users/pengyufeng/opt/anaconda3/bin/python3"
+APP_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+PYTHON = os.environ.get("XXT_PYTHON", "python3")
 bridge_py = os.path.join(APP_DIR, "bridge.py")
 
 p = subprocess.Popen(

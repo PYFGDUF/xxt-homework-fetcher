@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 /// 学习通作业抓取工具 —— 原生 macOS 重写
 /// SwiftUI 界面（含 Liquid Glass / 材质背景）+ 复用现有 Python/Playwright 引擎（JSON 子进程通信）
@@ -61,15 +62,35 @@ struct XxtApp: App {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 首次打开应用时一次性集中申请所有系统权限（目前仅系统通知）。
+        requestAllPermissions()
         // 单实例控制：若已存在同一 bundle id 的实例，则激活它并退出本进程，
         // 使“再次打开/双击”直接跳转到先前已经打开的程序。
         enforceSingleInstance()
+    }
+
+    /// 首次启动一次性集中申请全部系统权限。
+    /// 系统仅在「从未决定过」时才弹出授权框；已允许 / 已拒绝 / 临时授权均不再打扰。
+    private func requestAllPermissions() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.getNotificationSettings { settings in
+            guard settings.authorizationStatus == .notDetermined else { return }
+            center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+        }
+    }
+
+    // 应用位于前台时也以横幅+提示音展示通知（否则通知只在通知中心里，用户看不到）
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
     }
 
     private func enforceSingleInstance() {

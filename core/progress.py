@@ -6,6 +6,7 @@ import datetime
 import hashlib
 import json
 import os
+import threading
 import time
 
 from core.config import PROGRESS_FILE, get_force_regrab
@@ -26,6 +27,8 @@ class ProgressTracker:
 
     def __init__(self, path: str = None):
         self.path = path or os.path.join(_RUNTIME_ROOT, PROGRESS_FILE)
+        # 并发 worker 会同时写 progress.json，用锁保证线程安全
+        self._lock = threading.RLock()
         self.data = self._load()
         self._migrate()
         self._clean()
@@ -106,22 +109,23 @@ class ProgressTracker:
     def set(self, url: str, title: str, status: str, output_dir: str = None, word_file: str = None):
         if not url:
             return
-        key = self._url_key(url)
-        item = self.data["items"].get(key, {})
-        item.update({
-            "url": url,
-            "title": title,
-            "status": status,
-            "last_run": time.strftime("%Y%m%d_%H%M%S"),
-        })
-        if output_dir:
-            item["output_dir"] = output_dir
-        if word_file:
-            item["word_file"] = word_file
-        self.data["items"][key] = item
-        self.save()
-        # 每次写入后检查是否需要清理
-        self._clean()
+        with self._lock:
+            key = self._url_key(url)
+            item = self.data["items"].get(key, {})
+            item.update({
+                "url": url,
+                "title": title,
+                "status": status,
+                "last_run": time.strftime("%Y%m%d_%H%M%S"),
+            })
+            if output_dir:
+                item["output_dir"] = output_dir
+            if word_file:
+                item["word_file"] = word_file
+            self.data["items"][key] = item
+            self.save()
+            # 每次写入后检查是否需要清理
+            self._clean()
 
     def is_completed(self, url: str) -> bool:
         return self.get_status(url) == "completed"

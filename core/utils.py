@@ -10,7 +10,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 try:
     from PIL import Image
-except Exception:
+except ImportError:
     Image = None
 
 
