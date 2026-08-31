@@ -35,7 +35,6 @@ def register_active_homeworks(items: list[dict]):
 
 def add_active_homeworks(items) -> int:
     """运行中加入新作业，仅追加「未入队、未处理」的项。返回实际新增个数。"""
-    global _items
     added = 0
     with _lock:
         if not _registered:
