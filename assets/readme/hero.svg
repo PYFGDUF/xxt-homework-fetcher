@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="380" viewBox="0 0 1200 380" role="img" aria-labelledby="hero-title hero-desc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <title id="hero-title">学习通作业爬取工具 · XXT Homework Fetcher</title>
+  <desc id="hero-desc">macOS 原生 SwiftUI 工具：批量抓取超星学习通课程作业的题目、选项与答案，自动合并并导出为 Word / PDF 文档。</desc>
+
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FB6A3C"/>
+      <stop offset="1" stop-color="#E4162B"/>
+    </linearGradient>
+    <linearGradient id="flow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#4F46E5" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#4F46E5" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- canvas -->
+  <rect width="1200" height="380" rx="26" fill="#0A0C12"/>
+  <rect x="0.75" y="0.75" width="1198.5" height="378.5" rx="25" fill="none" stroke="#212942" stroke-width="1.5"/>
+  <circle cx="908" cy="150" r="170" fill="url(#glow)"/>
+
+  <!-- left: title block -->
+  <g transform="translate(64 0)">
+    <circle cx="6" cy="86" r="5" fill="#22D3EE"/>
+    <text x="20" y="92" font-size="18" fill="#22D3EE" letter-spacing="1.5">macOS 原生 · SwiftUI 图形工具</text>
+
+    <text x="0" y="168" font-size="54" font-weight="700" fill="#EEF1F7" letter-spacing="0.5">学习通作业爬取工具</text>
+    <text x="0" y="202" font-size="21" fill="#8B93A7" letter-spacing="3">XXT HOMEWORK FETCHER</text>
+
+    <text x="0" y="248" font-size="21" fill="#C7CEDD">批量抓取超星学习通课程作业的题目、选项与答案，</text>
+    <text x="0" y="280" font-size="21" fill="#C7CEDD">自动合并，一键导出为 Word / PDF 文档。</text>
+
+    <text x="0" y="330" font-size="15" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#6B7488">仅 macOS 14+ · 内置 Python + Playwright 引擎 · 本地运行 · MIT 开源</text>
+  </g>
+
+  <!-- right: brand icon -> fetch -> export -->
+  <g transform="translate(818 54)">
+    <!-- app icon: folded-corner document + cursor (from repo icon.png) -->
+    <rect width="184" height="184" rx="43" fill="url(#brand)"/>
+    <rect x="0.75" y="0.75" width="182.5" height="182.5" rx="42" fill="none" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="1.5"/>
+    <!-- document page -->
+    <path d="M44 56 Q44 46 54 46 L108 46 L138 76 L138 138 Q138 148 128 148 L54 148 Q44 148 44 138 Z" fill="#FFFFFF"/>
+    <path d="M108 46 L138 76 L108 76 Z" fill="#F4D3CD"/>
+    <!-- red text line -->
+    <rect x="60" y="82" width="52" height="9" rx="4.5" fill="#E4162B"/>
+    <!-- cursor -->
+    <g transform="translate(104 66)">
+      <path d="M0 0 L0 40 L11 30 L18 45 L25 42 L18 27 L31 27 Z" fill="#FFFFFF" stroke="#E4162B" stroke-width="3" stroke-linejoin="round"/>
+    </g>
+  </g>
+
+  <g text-anchor="middle">
+    <text x="910" y="272" font-size="16" fill="#8B93A7" letter-spacing="0.5">题目 · 选项 · 答案 · 图片</text>
+    <path d="M910 284 l0 12 m-6 -6 l6 7 l6 -7" fill="none" stroke="#4F46E5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <g transform="translate(808 306)">
+      <rect width="204" height="42" rx="12" fill="#141826" stroke="#4F46E5" stroke-width="1.5"/>
+      <circle cx="22" cy="21" r="4" fill="#22D3EE"/>
+      <text x="112" y="27" font-size="17" fill="#EEF1F7">合并导出 Word / PDF</text>
+    </g>
+  </g>
+</svg>
