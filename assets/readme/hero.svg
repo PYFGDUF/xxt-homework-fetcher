@@ -1,64 +1,71 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="380" viewBox="0 0 1200 380" role="img" aria-labelledby="hero-title hero-desc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="444" viewBox="0 0 1200 444" role="img" aria-labelledby="hero-title hero-desc" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', 'Microsoft YaHei', sans-serif">
   <title id="hero-title">学习通作业爬取工具 · XXT Homework Fetcher</title>
-  <desc id="hero-desc">macOS 原生 SwiftUI 工具：批量抓取超星学习通课程作业的题目、选项与答案，自动合并并导出为 Word / PDF 文档。</desc>
+  <desc id="hero-desc">macOS 原生工具：批量抓取超星学习通课程作业的题干、选项与答案，合并导出为一份排好版的 Word 文档。右侧为抓取结果生成的 Word 样张。</desc>
 
   <defs>
-    <linearGradient id="brand" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#FB6A3C"/>
-      <stop offset="1" stop-color="#E4162B"/>
-    </linearGradient>
-    <linearGradient id="flow" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#4F46E5"/>
-      <stop offset="1" stop-color="#22D3EE"/>
-    </linearGradient>
-    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0" stop-color="#4F46E5" stop-opacity="0.45"/>
-      <stop offset="1" stop-color="#4F46E5" stop-opacity="0"/>
-    </radialGradient>
+    <filter id="paper-shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#3A2E20" flood-opacity="0.10"/>
+    </filter>
   </defs>
 
-  <!-- canvas -->
-  <rect width="1200" height="380" rx="26" fill="#0A0C12"/>
-  <rect x="0.75" y="0.75" width="1198.5" height="378.5" rx="25" fill="none" stroke="#212942" stroke-width="1.5"/>
-  <circle cx="908" cy="150" r="170" fill="url(#glow)"/>
+  <!-- ===== canvas ===== -->
+  <rect width="1200" height="444" rx="24" fill="#F6F2E9"/>
+  <rect x="0.5" y="0.5" width="1199" height="443" rx="23.5" fill="none" stroke="#E6DDCB"/>
 
-  <!-- left: title block -->
-  <g transform="translate(64 0)">
-    <circle cx="6" cy="86" r="5" fill="#22D3EE"/>
-    <text x="20" y="92" font-size="18" fill="#22D3EE" letter-spacing="1.5">macOS 原生 · SwiftUI 图形工具</text>
+  <!-- ===== title block ===== -->
+  <g id="title-block">
+    <rect x="76" y="82" width="26" height="3" rx="1.5" fill="#C4382A"/>
+    <text x="114" y="93" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" letter-spacing="2.4" fill="#7C7467">XXT HOMEWORK FETCHER</text>
 
-    <text x="0" y="168" font-size="54" font-weight="700" fill="#EEF1F7" letter-spacing="0.5">学习通作业爬取工具</text>
-    <text x="0" y="202" font-size="21" fill="#8B93A7" letter-spacing="3">XXT HOMEWORK FETCHER</text>
+    <text x="76" y="182" font-size="61" font-weight="600" fill="#191A1E" letter-spacing="0.5">学习通作业爬取工具</text>
 
-    <text x="0" y="248" font-size="21" fill="#C7CEDD">批量抓取超星学习通课程作业的题目、选项与答案，</text>
-    <text x="0" y="280" font-size="21" fill="#C7CEDD">自动合并，一键导出为 Word / PDF 文档。</text>
+    <text x="76" y="238" font-size="21" fill="#4F4B45">把学习通课程里的作业题干、选项与答案</text>
+    <text x="76" y="270" font-size="21" fill="#4F4B45">整批抓下来，合并成一份排好版的 Word。</text>
 
-    <text x="0" y="330" font-size="15" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#6B7488">仅 macOS 14+ · 内置 Python + Playwright 引擎 · 本地运行 · MIT 开源</text>
+    <rect x="76" y="316" width="548" height="1" fill="#E2D9C8"/>
+    <text x="76" y="352" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16.5" fill="#7C7467">macOS 14+ · SwiftUI 原生 · 内置引擎 · 全程本地 · MIT</text>
   </g>
 
-  <!-- right: brand icon -> fetch -> export -->
-  <g transform="translate(818 54)">
-    <!-- app icon: folded-corner document + cursor (from repo icon.png) -->
-    <rect width="184" height="184" rx="43" fill="url(#brand)"/>
-    <rect x="0.75" y="0.75" width="182.5" height="182.5" rx="42" fill="none" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="1.5"/>
-    <!-- document page -->
-    <path d="M44 56 Q44 46 54 46 L108 46 L138 76 L138 138 Q138 148 128 148 L54 148 Q44 148 44 138 Z" fill="#FFFFFF"/>
-    <path d="M108 46 L138 76 L108 76 Z" fill="#F4D3CD"/>
-    <!-- red text line -->
-    <rect x="60" y="82" width="52" height="9" rx="4.5" fill="#E4162B"/>
-    <!-- cursor -->
-    <g transform="translate(104 66)">
-      <path d="M0 0 L0 40 L11 30 L18 45 L25 42 L18 27 L31 27 Z" fill="#FFFFFF" stroke="#E4162B" stroke-width="3" stroke-linejoin="round"/>
-    </g>
-  </g>
+  <!-- ===== document specimen ===== -->
+  <g id="document-specimen">
+    <!-- stacked page behind -->
+    <rect x="708" y="60" width="430" height="336" rx="3" fill="#EBE3D4"/>
 
-  <g text-anchor="middle">
-    <text x="910" y="272" font-size="16" fill="#8B93A7" letter-spacing="0.5">题目 · 选项 · 答案 · 图片</text>
-    <path d="M910 284 l0 12 m-6 -6 l6 7 l6 -7" fill="none" stroke="#4F46E5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
-    <g transform="translate(808 306)">
-      <rect width="204" height="42" rx="12" fill="#141826" stroke="#4F46E5" stroke-width="1.5"/>
-      <circle cx="22" cy="21" r="4" fill="#22D3EE"/>
-      <text x="112" y="27" font-size="17" fill="#EEF1F7">合并导出 Word / PDF</text>
+    <!-- front page -->
+    <rect x="690" y="44" width="440" height="352" rx="3" fill="#FFFDF8" stroke="#E4DACA" filter="url(#paper-shadow)"/>
+
+    <!-- page header -->
+    <text x="714" y="80" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" letter-spacing="1.2" fill="#877E70">WORD · 合并文档</text>
+    <text x="1106" y="80" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" fill="#877E70">共 19 题</text>
+    <rect x="714" y="94" width="392" height="1" fill="#ECE4D5"/>
+
+    <!-- question meta -->
+    <text x="714" y="130" font-size="22" font-weight="600" fill="#191A1E">第 2 题</text>
+    <text x="1106" y="130" text-anchor="end" font-size="18" fill="#877E70">单选题</text>
+
+    <!-- question -->
+    <text x="714" y="168" font-size="20.5" fill="#33302B">在哈希表查找过程中，</text>
+    <text x="714" y="196" font-size="20.5" fill="#33302B">可用（　）来处理冲突。</text>
+
+    <!-- options -->
+    <g font-size="21" fill="#33302B">
+      <text x="714" y="236" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" fill="#8C8273">A</text>
+      <text x="742" y="236">关键字比较法</text>
+
+      <rect x="706" y="246" width="3" height="26" rx="1.5" fill="#C4382A"/>
+      <text x="714" y="266" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" fill="#C4382A">B</text>
+      <text x="742" y="266" font-weight="600" fill="#191A1E">线性探测法</text>
+      <path d="M880 242 L880 268 L886.5 261.5 L890.5 270 L894 268.5 L890.5 260 L899 260 Z" fill="#C4382A" stroke="#FFFDF8" stroke-width="1.6" stroke-linejoin="round"/>
+
+      <text x="714" y="296" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" fill="#8C8273">C</text>
+      <text x="742" y="296">除留余数法</text>
+
+      <text x="714" y="326" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" fill="#8C8273">D</text>
+      <text x="742" y="326">数字分析法</text>
     </g>
+
+    <!-- answer -->
+    <rect x="706" y="344" width="408" height="1" fill="#EADFCE"/>
+    <text x="714" y="376" font-size="21" fill="#C4382A"><tspan font-weight="600">答案</tspan>　B　线性探测法</text>
   </g>
 </svg>
